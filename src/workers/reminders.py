@@ -2,10 +2,7 @@
 Reminder Manager — система напоминаний.
 
 Бот может запоминать напоминания и отправлять их в нужное время.
-Примеры:
-  «Псина, напомни завтра в 15:00 что совещание»
-  «Псина, напомни через 2 часа что позвонить маме»
-  «Псина, напомни в пятницу что сдать отчёт»
+Поддержка напоминаний конкретному человеку: «Псина, напомни @Васе завтра в 3».
 """
 
 import re
@@ -16,6 +13,7 @@ from sqlalchemy import select
 
 from src.database.session import get_session
 from src.database.models import Reminder
+from src.context_tracker.tracker import context_tracker
 
 logger = structlog.get_logger()
 
@@ -29,6 +27,7 @@ class ReminderManager:
         user_id: int,
         content: str,
         remind_at: datetime,
+        target_user_id: int | None = None,
     ) -> Reminder:
         """Создать напоминание."""
         async for session in get_session():
@@ -37,6 +36,7 @@ class ReminderManager:
                 user_id=user_id,
                 content=content,
                 remind_at=remind_at,
+                target_user_id=target_user_id,
             )
             session.add(reminder)
             await session.commit()
@@ -46,6 +46,7 @@ class ReminderManager:
                 "Reminder created",
                 reminder_id=reminder.id,
                 chat_id=chat_id,
+                target_user_id=target_user_id,
                 remind_at=remind_at.isoformat(),
             )
             return reminder
@@ -80,38 +81,68 @@ class ReminderManager:
             await session.commit()
 
     async def get_user_reminders(self, chat_id: int, user_id: int) -> list[Reminder]:
-        """Получить напоминания пользователя."""
+        """Получить напоминания пользователя (включая те где он target)."""
         async for session in get_session():
             stmt = (
                 select(Reminder)
                 .where(
                     Reminder.chat_id == chat_id,
-                    Reminder.user_id == user_id,
                     Reminder.is_sent == False,
+                    Reminder.user_id == user_id | (Reminder.target_user_id == user_id),
                 )
                 .order_by(Reminder.remind_at)
             )
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    def parse_natural_reminder(self, text: str) -> tuple[datetime, str] | None:
+    def parse_target_user(self, text: str, chat_id: int) -> tuple[str, int | None]:
+        """
+        Извлечь целевого пользователя из текста напоминания.
+        «Псина, напомни @username завтра в 3 что встреча»
+        Возвращает (очищенный_текст, target_user_id или None).
+        """
+        # Ищем @username
+        at_match = re.search(r'@(\w+)', text)
+        if at_match:
+            username = at_match.group(1)
+            target_id = context_tracker.resolve_name(username)
+            if target_id:
+                # Убираем @username из текста
+                cleaned = text.replace(f'@{username}', '').strip()
+                # Убираем лишние "напомни" если осталось
+                cleaned = re.sub(r'^напомни\s+', '', cleaned, flags=re.IGNORECASE).strip()
+                return cleaned, target_id
+
+        # Ищем имя: «напомни Васе/Васе/Пете/Маше»
+        name_match = re.search(
+            r'напомни\s+([А-ЯA-Z][а-яa-z]+)(?:у|е|у|а|и)\s+(.+)',
+            text,
+            re.IGNORECASE,
+        )
+        if name_match:
+            name = name_match.group(1)
+            content = name_match.group(2)
+            target_id = context_tracker.resolve_name(name)
+            if target_id:
+                return content, target_id
+
+        return text, None
+
+    def parse_natural_reminder(self, text: str, chat_id: int = 0) -> tuple[datetime, str, int | None] | None:
         """
         Распарсить естественное напоминание.
-        Возвращает (время, текст) или None.
-
-        Примеры:
-          «напомни завтра в 15:00 что совещание»
-          «напомни через 2 часа что позвонить»
-          «напомни в пятницу что сдать отчёт»
-          «напомни через 30 минут что проверить почту»
+        Возвращает (время, текст, target_user_id) или None.
         """
         text_lower = text.lower()
+
+        # Сначала ищем целевого пользователя
+        cleaned_text, target_user_id = self.parse_target_user(text_lower, chat_id)
 
         # Убираем обращение к боту
         text_clean = re.sub(
             r'^(псина|пес|пёс|песик|пёсик)[,\s:]+',
             '',
-            text_lower,
+            cleaned_text,
             flags=re.IGNORECASE,
         )
 
@@ -141,7 +172,7 @@ class ReminderManager:
             else:
                 delta = timedelta(hours=num)
 
-            return now + delta, content
+            return now + delta, content, target_user_id
 
         # 2. «завтра в HH:MM»
         tomorrow_match = re.search(
@@ -153,9 +184,9 @@ class ReminderManager:
             minute = int(tomorrow_match.group(2) or 0)
             content = tomorrow_match.group(3).strip()
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=1)
-            return target, content
+            return target, content, target_user_id
 
-        # 3. «в HH:MM» — сегодня или завтра если время прошло
+        # 3. «в HH:MM»
         time_match = re.search(
             r'(?:в\s+)?(\d{1,2}):?(\d{2})?\s+(?:что\s+)?(.+)',
             text_clean,
@@ -165,10 +196,9 @@ class ReminderManager:
             minute = int(time_match.group(2) or 0)
             content = time_match.group(3).strip()
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            # Если время уже прошло — завтра
             if target <= now:
                 target += timedelta(days=1)
-            return target, content
+            return target, content, target_user_id
 
         # 4. «в понедельник/вторник/...»
         weekdays = {
@@ -182,7 +212,6 @@ class ReminderManager:
         }
         for day_name, day_num in weekdays.items():
             if day_name in text_clean:
-                # Найти текст напоминания после дня недели
                 content_match = re.search(
                     rf'{day_name}\s+(?:в\s+(\d{{1,2}}):?(\d{{2}})?\s+)?(?:что\s+)?(.+)',
                     text_clean,
@@ -197,11 +226,11 @@ class ReminderManager:
                         days_ahead += 7
 
                     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=days_ahead)
-                    return target, content
+                    return target, content, target_user_id
 
         # 5. Просто текст без времени — через 1 час
         if text_clean:
-            return now + timedelta(hours=1), text_clean
+            return now + timedelta(hours=1), text_clean, target_user_id
 
         return None
 

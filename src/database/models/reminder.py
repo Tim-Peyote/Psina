@@ -13,6 +13,7 @@ class Reminder(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    target_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     remind_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     is_sent: Mapped[bool] = mapped_column(Boolean, default=False)

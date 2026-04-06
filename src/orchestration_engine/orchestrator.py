@@ -214,11 +214,11 @@ class Orchestrator:
             return None
 
         # Парсим напоминание
-        parsed = reminder_manager.parse_natural_reminder(msg.text)
+        parsed = reminder_manager.parse_natural_reminder(msg.text, msg.chat_id)
         if not parsed:
             return None
 
-        remind_at, content = parsed
+        remind_at, content, target_user_id = parsed
 
         # Создаём напоминание
         reminder = await reminder_manager.create_reminder(
@@ -226,10 +226,18 @@ class Orchestrator:
             user_id=msg.user_id,
             content=content,
             remind_at=remind_at,
+            target_user_id=target_user_id,
         )
 
         time_str = remind_at.strftime("%d.%m.%Y в %H:%M")
-        return f"📝 Запомнил! Напомню {time_str}: {content}"
+        target_text = ""
+        if target_user_id:
+            from src.context_tracker.tracker import context_tracker
+            names = context_tracker.get_participant_names(msg.chat_id)
+            target_name = names.get(target_user_id, f"user_{target_user_id}")
+            target_text = f" для {target_name}"
+
+        return f"📝 Запомнил! Напомню{target_text} {time_str}: {content}"
 
     async def _generate_response(
         self,

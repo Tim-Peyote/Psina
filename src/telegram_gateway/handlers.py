@@ -19,6 +19,7 @@ from src.orchestration_engine.session_manager import session_manager
 from src.orchestration_engine.censorship_manager import censorship_manager, CensorshipLevel
 from src.orchestration_engine.vibe_adapter import vibe_adapter
 from src.orchestration_engine.message_router import message_router
+from src.orchestration_engine.reaction_engine import reaction_engine
 
 logger = structlog.get_logger()
 
@@ -26,10 +27,26 @@ router = AiogramRouter()
 orchestrator = Orchestrator()
 
 
-async def _reply(message: Message, text: str) -> None:
+async def _reply(message: Message, text: str, reply_to: int | None = None) -> None:
     """Отправить ответ и зарегистрировать ID для reply detection."""
-    sent = await message.answer(text)
+    sent = await message.answer(text, reply_to_message_id=reply_to)
     message_router.register_bot_message(sent.message_id)
+
+
+async def _try_react(message: Message, bot, normalized: "NormalizedMessage") -> None:
+    """Попытаться поставить реакцию на сообщение."""
+    from aiogram.types import ReactAction
+    emoji = reaction_engine.should_react(normalized)
+    if emoji:
+        try:
+            await bot.set_message_reaction(
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                reaction=[ReactAction(emoji=emoji)],
+            )
+            logger.debug("Reaction set", emoji=emoji, message_id=message.message_id)
+        except Exception:
+            logger.debug("Failed to set reaction", emoji=emoji, exc_info=True)
 
 
 def _normalize_message(msg: Message) -> NormalizedMessage:
@@ -282,10 +299,15 @@ async def handle_message(message: Message) -> None:
         text=normalized.text[:100],
     )
 
+    # Реакция на сообщение пользователя
+    bot = message.bot
+    if bot:
+        await _try_react(message, bot, normalized)
+
     response = await orchestrator.process_message(normalized)
     if response:
-        sent = await message.answer(response)
-        message_router.register_bot_message(sent.message_id)
+        # Отвечаем reply на сообщение пользователя
+        await _reply(message, response, reply_to=message.message_id)
 
 
 @router.my_chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))

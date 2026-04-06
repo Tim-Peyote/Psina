@@ -56,9 +56,25 @@ def check_reminders() -> None:
 
         for reminder in pending:
             try:
+                text = reminder.content
+                if reminder.target_user_id:
+                    from src.database.session import async_session_factory
+                    from src.database.models import User
+                    from sqlalchemy import select
+
+                    async with async_session_factory() as session:
+                        user_stmt = select(User).where(User.id == reminder.target_user_id)
+                        user_result = await session.execute(user_stmt)
+                        user = user_result.scalar_one_or_none()
+                        if user:
+                            mention = f"@{user.username}" if user.username else user.first_name or f"user_{reminder.target_user_id}"
+                            text = f"{mention}, напоминаю: {reminder.content}"
+                        else:
+                            text = f"Напоминание: {reminder.content}"
+
                 await bot.send_message(
                     chat_id=reminder.chat_id,
-                    text=f"⏰ <b>Напоминание:</b>\n\n{reminder.content}",
+                    text=f"⏰ <b>Напоминание:</b>\n\n{text}",
                     parse_mode="HTML",
                 )
                 await reminder_manager.mark_sent(reminder.id)
