@@ -48,6 +48,20 @@ class MessageRouter:
     Классифицирует каждое входящее сообщение.
     """
 
+    def __init__(self) -> None:
+        # Храним telegram_id сообщений бота для детекции reply
+        self._bot_message_ids: set[int] = set()
+        # Ограничиваем размер — храним последние 5000
+        self._max_tracked = 5000
+
+    def register_bot_message(self, telegram_id: int) -> None:
+        """Записать ID сообщения, отправленного ботом."""
+        self._bot_message_ids.add(telegram_id)
+        if len(self._bot_message_ids) > self._max_tracked:
+            # Удаляем oldest — просто берём половину
+            ids_list = list(self._bot_message_ids)
+            self._bot_message_ids = set(ids_list[-self._max_tracked // 2:])
+
     def route(self, msg: NormalizedMessage) -> RoutingDecision:
         """
         Принять решение по маршрутизации сообщения.
@@ -166,10 +180,7 @@ class MessageRouter:
         """
         if msg.reply_to_message_id is None:
             return False
-
-        # TODO: In production, check if reply_to_message_id was sent by the bot
-        # For now, we track this via session manager
-        return False
+        return msg.reply_to_message_id in self._bot_message_ids
 
 
 message_router = MessageRouter()

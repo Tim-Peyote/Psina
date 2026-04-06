@@ -18,11 +18,18 @@ from src.orchestration_engine.orchestrator import Orchestrator
 from src.orchestration_engine.session_manager import session_manager
 from src.orchestration_engine.censorship_manager import censorship_manager, CensorshipLevel
 from src.orchestration_engine.vibe_adapter import vibe_adapter
+from src.orchestration_engine.message_router import message_router
 
 logger = structlog.get_logger()
 
 router = AiogramRouter()
 orchestrator = Orchestrator()
+
+
+async def _reply(message: Message, text: str) -> None:
+    """Отправить ответ и зарегистрировать ID для reply detection."""
+    sent = await message.answer(text)
+    message_router.register_bot_message(sent.message_id)
 
 
 def _normalize_message(msg: Message) -> NormalizedMessage:
@@ -65,7 +72,7 @@ def _normalize_message(msg: Message) -> NormalizedMessage:
 async def handle_start(message: Message) -> None:
     """Команда /start."""
     logger.info("User started bot", user_id=message.from_user.id if message.from_user else None)
-    await message.answer(
+    await _reply(message,
         f"🐾 Привет! Я <b>{settings.bot_name}</b>.\n\n"
         f"Я — живой участник чата. Слушаю, запоминаю, отвечаю когда нужно.\n\n"
         f"Позови меня по имени — и я приду. А без дела не лезу 🤫\n\n"
@@ -97,14 +104,14 @@ async def handle_help(message: Message) -> None:
         f"🗣️ <b>Речью:</b> «заткнись», «будь поактивнее», «сбавь», "
         f"«убери цензуру», «пофильтруй», «напомни завтра в 15 что встреча»"
     )
-    await message.answer(help_text)
+    await _reply(message, help_text)
 
 
 @router.message(Command("summary"))
 async def handle_summary(message: Message) -> None:
     """Команда /summary."""
     result = await orchestrator.handle_summary_command(message.chat.id)
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("memory"))
@@ -112,7 +119,7 @@ async def handle_memory(message: Message) -> None:
     """Команда /memory."""
     user_id = message.from_user.id if message.from_user else 0
     result = await orchestrator.handle_memory_command(user_id, message.chat.id)
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("profile"))
@@ -120,7 +127,7 @@ async def handle_profile(message: Message) -> None:
     """Команда /profile."""
     user_id = message.from_user.id if message.from_user else 0
     result = await orchestrator.handle_profile_command(user_id)
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("mode"))
@@ -132,7 +139,7 @@ async def handle_mode(message: Message, command: CommandObject) -> None:
         result = await orchestrator.handle_mode_command(chat_id, new_mode)
     else:
         result = await orchestrator.get_current_mode(chat_id)
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("game"))
@@ -141,7 +148,7 @@ async def handle_game(message: Message, command: CommandObject) -> None:
     user_id = message.from_user.id if message.from_user else 0
     args = (command.args or "").strip().split()
     result = await orchestrator.handle_game_command(user_id, message.chat.id, args)
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("settings"))
@@ -149,21 +156,21 @@ async def handle_settings(message: Message) -> None:
     """Команда /settings."""
     chat_id = message.chat.id
     result = await orchestrator.handle_settings_command(chat_id)
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("model"))
 async def handle_model_info(message: Message) -> None:
     """Команда /model."""
     result = await orchestrator.handle_model_command()
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("budget"))
 async def handle_budget(message: Message) -> None:
     """Команда /budget."""
     result = await orchestrator.handle_budget_command()
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("silence"))
@@ -177,7 +184,7 @@ async def handle_silence(message: Message, command: CommandObject) -> None:
         except ValueError:
             pass
     result = await orchestrator.handle_silence_command(chat_id, minutes)
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("remind"))
@@ -188,7 +195,7 @@ async def handle_remind(message: Message, command: CommandObject) -> None:
     args = (command.args or "").strip()
 
     if not args:
-        await message.answer(
+        await _reply(message,
             "⏰ <b>Напоминания:</b>\n\n"
             "Напиши мне: «Псина, напомни [когда] [что]»\n\n"
             "Примеры:\n"
@@ -201,7 +208,7 @@ async def handle_remind(message: Message, command: CommandObject) -> None:
         return
 
     result = await orchestrator.handle_remind_command(user_id, chat_id, args)
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("reminders"))
@@ -210,7 +217,7 @@ async def handle_reminders(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else 0
     chat_id = message.chat.id
     result = await orchestrator.handle_reminders_command(user_id, chat_id)
-    await message.answer(result)
+    await _reply(message, result)
 
 
 @router.message(Command("censorship"))
@@ -227,10 +234,10 @@ async def handle_censorship(message: Message, command: CommandObject) -> None:
             "moderate": "⚖️ Цензура: УМЕРЕННАЯ. Без грубого мата.",
             "free": "🔓 Цензура: СВОБОДНАЯ. Без фильтров.",
         }
-        await message.answer(texts[args])
+        await _reply(message, texts[args])
     else:
         current = censorship_manager.get_level(chat_id).value
-        await message.answer(
+        await _reply(message,
             f"⚖️ <b>Цензура:</b>\n\n"
             f"Текущий: <code>{current}</code>\n\n"
             f"Уровни:\n"
@@ -251,7 +258,7 @@ async def handle_vibe(message: Message) -> None:
     mate_text = "Есть мат" if profile.has_mate else "Без мата"
     emoji_text = "Много эмодзи" if profile.is_emoji_heavy else "Мало эмодзи"
 
-    await message.answer(
+    await _reply(message,
         f"🎭 <b>Вайб чата:</b>\n\n"
         f"Стиль: {formality_text}\n"
         f"Мат: {mate_text}\n"
@@ -277,7 +284,8 @@ async def handle_message(message: Message) -> None:
 
     response = await orchestrator.process_message(normalized)
     if response:
-        await message.answer(response)
+        sent = await message.answer(response)
+        message_router.register_bot_message(sent.message_id)
 
 
 @router.my_chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))
