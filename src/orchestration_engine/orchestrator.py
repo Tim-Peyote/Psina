@@ -1,0 +1,596 @@
+"""
+Orchestrator — центральный мозг Псины.
+
+Новый пайплайн:
+  message → track_context → ingest_memory → extract_facts → track_relationships
+  → route_message → handle_behavior_control / direct_call / session / ignore
+  → anti_chaos_check → build_context → generate → save
+"""
+
+import enum
+from datetime import datetime, timezone
+
+import structlog
+
+from src.config import settings
+from src.message_processor.processor import NormalizedMessage
+from src.memory_engine.engine import MemoryEngine
+from src.memory_engine.fact_extractor import fact_extractor
+from src.memory_engine.relationship_engine import relationship_engine
+from src.llm_adapter.base import LLMProvider
+from src.retrieval_engine.retriever import Retriever
+from src.summarizer.daily import DailySummarizer
+from src.game_engine.manager import GameManager
+from src.context_tracker.tracker import context_tracker
+from src.orchestration_engine.personality import bot_personality
+from src.orchestration_engine.message_router import message_router, MessageRoute, RoutingDecision
+from src.orchestration_engine.session_manager import session_manager
+from src.orchestration_engine.anti_chaos import anti_chaos
+from src.orchestration_engine.trigger_system import trigger_system, ConfidenceLevel
+from src.orchestration_engine.knowledge_analyzer import knowledge_analyzer
+from src.orchestration_engine.vibe_adapter import vibe_adapter
+from src.orchestration_engine.censorship_manager import censorship_manager
+from src.orchestration_engine.abuse_detector import abuse_detector
+from src.workers.reminders import reminder_manager
+
+logger = structlog.get_logger()
+
+
+class ActivityLevel(enum.StrEnum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+
+
+class ChatSettings:
+    """Настройки конкретного чата."""
+
+    def __init__(self, chat_id: int) -> None:
+        from datetime import timedelta
+        self.chat_id = chat_id
+        self.mode: str = settings.bot_mode
+        self.activity: ActivityLevel = ActivityLevel.NORMAL
+        self.silence_until: datetime | None = None
+        self.mention_only: bool = False
+
+    @property
+    def is_silenced(self) -> bool:
+        if self.silence_until is None:
+            return False
+        return datetime.now(timezone.utc) < self.silence_until
+
+    def silence(self, minutes: int) -> None:
+        from datetime import timedelta
+        self.silence_until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+
+
+class Orchestrator:
+    """
+    Центральный мозг Псины.
+
+    Главное правило:
+    Бот читает всё → понимает контекст → отвечает только при высокой уверенности.
+    Ошибка "промолчал" допустима. Ошибка "влез не туда" — критическая.
+    """
+
+    def __init__(self) -> None:
+        self.memory_engine = MemoryEngine()
+        self.llm_provider = LLMProvider.get_provider()
+        self.retriever = Retriever()
+        self.summarizer = DailySummarizer()
+        self.game_manager = GameManager()
+
+        # Настройки чатов
+        self._chat_settings: dict[int, ChatSettings] = {}
+
+        logger.info("Orchestrator initialized", bot_name=settings.bot_name)
+
+    def _get_settings(self, chat_id: int) -> ChatSettings:
+        if chat_id not in self._chat_settings:
+            self._chat_settings[chat_id] = ChatSettings(chat_id)
+        return self._chat_settings[chat_id]
+
+    async def process_message(self, msg: NormalizedMessage) -> str | None:
+        """
+        Полный пайплайн обработки сообщения.
+        """
+        # ===== ФАЗА 1: СЛУШАЕМ И ЗАПОМИНАЕМ (всегда) =====
+
+        # 1. Трекаем контекст и вайб
+        context = context_tracker.get_context_for_message(msg)
+        vibe_adapter.analyze_message(msg.chat_id, msg.text)
+
+        # 2. Сохраняем в память
+        await self.memory_engine.ingest_message(msg)
+
+        # 3. Извлекаем факты
+        facts = await fact_extractor.extract_and_save(msg)
+
+        # 4. Трекаем связи
+        await relationship_engine.extract_relationship_from_message(msg)
+
+        # 5. Обновляем профили
+        if len(msg.text) > 30:
+            await fact_extractor.update_profile_from_facts(msg.user_id)
+            await relationship_engine.update_profile_relationships(msg.user_id)
+
+        # ===== ФАЗА 1.5: ПРОВЕРЯЕМ НАПОМИНАНИЕ =====
+        reminder = await self._try_parse_reminder(msg)
+        if reminder:
+            return reminder
+
+        # ===== ФАЗА 1.6: ДЕТЕКЦИЯ АГРЕССИИ =====
+        abuse_result = abuse_detector.analyze(msg)
+        if abuse_result["is_abuse"]:
+            if abuse_result["action"] == "auto_silence":
+                settings_obj = self._get_settings(msg.chat_id)
+                settings_obj.silence(30)
+                return abuse_result["response_text"]
+            if abuse_result["response_text"] and abuse_result["action"] in ("warning", "strict_warning"):
+                return abuse_result["response_text"]
+
+        # ===== ФАЗА 2: РЕШАЕМ ЧТО ДЕЛАТЬ =====
+
+        settings_obj = self._get_settings(msg.chat_id)
+
+        # 6. Проверяем silence
+        if settings_obj.is_silenced:
+            logger.debug("Chat is silenced", chat_id=msg.chat_id)
+            return None
+
+        # 7. Проверяем цензуру — команда смены уровня
+        new_censorship = censorship_manager.parse_level_from_text(msg.text)
+        if new_censorship:
+            trigger = trigger_system.evaluate(
+                msg.text,
+                is_reply=msg.reply_to_message_id is not None,
+                reply_to_bot=False,
+                in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
+            )
+            if trigger.level == ConfidenceLevel.HIGH:
+                censorship_manager.set_level(msg.chat_id, new_censorship)
+                level_texts = {
+                    "strict": "Понял, буду аккуратнее с выражениями.",
+                    "moderate": "Ок, умеренный режим.",
+                    "free": "Понял, без фильтров.",
+                }
+                return level_texts.get(new_censorship.value, "Принял.")
+
+        # 8. Классифицируем сообщение
+        decision = message_router.route(msg)
+
+        logger.debug(
+            "Message routed",
+            route=decision.route.value,
+            confidence=decision.confidence,
+            reason=decision.reason,
+        )
+
+        # ===== ФАЗА 3: ДЕЙСТВУЕМ =====
+
+        # Behavior control — меняем режим
+        if decision.route == MessageRoute.BEHAVIOR_CONTROL:
+            return await self._handle_behavior_control(msg.chat_id, decision.behavior_action, msg.user_id)
+
+        # Game interaction
+        if decision.route == MessageRoute.GAME_INTERACTION:
+            return await self._handle_game_command(msg)
+
+        # Background — только запомнить
+        if decision.route == MessageRoute.BACKGROUND:
+            return None
+
+        # Ignore — чужой разговор
+        if decision.route == MessageRoute.IGNORE:
+            return None
+
+        # Direct call или session continuation
+        if decision.should_respond:
+            return await self._generate_response(msg, context, decision)
+
+        # Не должен отвечать
+        return None
+
+    async def _try_parse_reminder(self, msg: NormalizedMessage) -> str | None:
+        """
+        Попытаться распознать напоминание из текста.
+        Если это напоминание — создать и вернуть подтверждение.
+        """
+        text_lower = msg.text.lower()
+
+        # Проверяем что это команда напоминания
+        if not any(w in text_lower for w in ["напомни", "напоминани"]):
+            return None
+
+        # Проверяем что обращение к боту
+        trigger = trigger_system.evaluate(
+            text=msg.text,
+            is_reply=msg.reply_to_message_id is not None,
+            reply_to_bot=False,
+            in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
+        )
+
+        if trigger.level != ConfidenceLevel.HIGH:
+            return None
+
+        # Парсим напоминание
+        parsed = reminder_manager.parse_natural_reminder(msg.text)
+        if not parsed:
+            return None
+
+        remind_at, content = parsed
+
+        # Создаём напоминание
+        reminder = await reminder_manager.create_reminder(
+            chat_id=msg.chat_id,
+            user_id=msg.user_id,
+            content=content,
+            remind_at=remind_at,
+        )
+
+        time_str = remind_at.strftime("%d.%m.%Y в %H:%M")
+        return f"📝 Запомнил! Напомню {time_str}: {content}"
+
+    async def _generate_response(
+        self,
+        msg: NormalizedMessage,
+        context: dict,
+        decision: RoutingDecision,
+    ) -> str | None:
+        """Сгенерировать ответ с анализом знаний."""
+        # Обновляем сессию
+        if decision.trigger.is_explicit_call:
+            session = session_manager.create_session(
+                msg.chat_id, msg.user_id, msg.reply_to_message_id,
+            )
+        else:
+            session_manager.update_activity(msg.chat_id, msg.user_id, msg.text)
+
+        # Anti-chaos: проверяем
+        is_urgent = decision.trigger.is_reply_to_bot or decision.trigger.is_explicit_call
+        can_respond, reason = anti_chaos.can_respond(msg.chat_id, is_urgent=is_urgent)
+        if not can_respond:
+            logger.debug("Anti-chaos blocked response", reason=reason)
+            return None
+
+        # ===== АНАЛИЗ ЗНАНИЙ =====
+        knowledge_report = await knowledge_analyzer.analyze(msg, context)
+        strategy = knowledge_analyzer.get_response_strategy(knowledge_report)
+
+        logger.debug(
+            "Knowledge analysis",
+            strategy=strategy,
+            has_info=knowledge_report.has_enough_info,
+        )
+
+        # Собираем контекст для LLM
+        settings_obj = self._get_settings(msg.chat_id)
+        activity = settings_obj.activity.value
+
+        # Инструкции от вайба и цензуры
+        vibe_instruction = vibe_adapter.get_style_instruction(msg.chat_id)
+        censorship_instruction = censorship_manager.get_instruction_for_llm(msg.chat_id)
+
+        system_prompt = bot_personality.get_system_prompt(
+            context=context,
+            activity_level=activity,
+            censorship_instruction=censorship_instruction,
+            vibe_instruction=vibe_instruction,
+        )
+
+        # Добавляем knowledge report
+        knowledge_context = knowledge_report.summary_text
+        if knowledge_context:
+            context["knowledge_context"] = knowledge_context
+
+        # Если стратегия — уточнить, добавляем подсказку
+        if strategy == "ask_clarification" and knowledge_report.clarification_prompt:
+            system_prompt += f"\n\n{knowledge_report.clarification_prompt}"
+        elif strategy == "admit_ignorance":
+            system_prompt += "\n\nУ тебя нет знаний по этой теме. Честно признайся что не знаешь."
+
+        # Session context
+        session_ctx = session_manager.get_session_context_for_llm(msg.chat_id, msg.user_id)
+        context["session_context"] = session_ctx
+
+        # Формируем сообщения
+        llm_messages = [
+            {"role": "system", "content": system_prompt},
+        ]
+
+        # Контекст разговора
+        recent = context.get("recent_messages", [])
+        for m in recent[-10:]:
+            author = m.get("username") or m.get("first_name") or "кто-то"
+            llm_messages.append({
+                "role": "user",
+                "content": f"[{author}]: {m.get('text', '')}",
+            })
+
+        # Текущее сообщение
+        author_name = msg.first_name or msg.username or "пользователь"
+        llm_messages.append({
+            "role": "user",
+            "content": f"[{author_name}]: {msg.text}",
+        })
+
+        # Эмоциональная реакция
+        emotional = bot_personality.get_emotional_response(msg.text)
+        if emotional:
+            llm_messages.append({
+                "role": "system",
+                "content": f"Твоя эмоциональная реакция: {emotional}. Можешь начать с этого.",
+            })
+
+        # Тон
+        tone = bot_personality.adjust_tone(msg.text)
+        if tone == "supportive":
+            llm_messages.append({
+                "role": "system",
+                "content": "Человеку непросто — отвечай мягко и с поддержкой. Можно использовать пёсьи метафоры.",
+            })
+        elif tone == "playful":
+            llm_messages.append({
+                "role": "system",
+                "content": "Можно ответить с юмором и лёгкостью. Пёсьи шутки уместны.",
+            })
+        elif tone == "calm":
+            llm_messages.append({
+                "role": "system",
+                "content": "Отвечай спокойно и нейтрально. Не спорь, не огрызайся.",
+            })
+
+        # Стратегия ответа
+        if strategy == "answer_with_uncertainty":
+            llm_messages.append({
+                "role": "system",
+                "content": "Ты не до конца уверен. Скажи что помнишь, но подчеркни что можешь ошибаться.",
+            })
+
+        # Генерируем
+        response = await self.llm_provider.generate_response(
+            messages=llm_messages,
+            chat_id=msg.chat_id,
+            user_id=msg.user_id,
+        )
+
+        # Сохраняем ответ
+        await self.memory_engine.save_bot_response(response, msg.chat_id, msg.user_id)
+
+        # Anti-chaos: записываем
+        anti_chaos.record_response(msg.chat_id)
+
+        return response
+
+    async def _handle_behavior_control(
+        self, chat_id: int, action: str | None, user_id: int,
+    ) -> str:
+        """Обработка команд управления поведением."""
+        settings = self._get_settings(chat_id)
+
+        if action == "silence":
+            settings.silence(60)  # молчим 1 час
+            response = bot_personality.get_silence_response()
+            logger.info("Chat silenced", chat_id=chat_id, user_id=user_id)
+            return response
+
+        if action == "more_active":
+            settings.activity = ActivityLevel.HIGH
+            response = bot_personality.get_more_active_response()
+            logger.info("Activity increased", chat_id=chat_id)
+            return response
+
+        if action == "less_active":
+            settings.activity = ActivityLevel.LOW
+            response = bot_personality.get_less_active_response()
+            logger.info("Activity decreased", chat_id=chat_id)
+            return response
+
+        if action == "mention_only":
+            settings.mention_only = True
+            settings.activity = ActivityLevel.LOW
+            response = bot_personality.get_mention_only_response()
+            logger.info("Mention-only mode", chat_id=chat_id)
+            return response
+
+        # Unknown action
+        return ""
+
+    async def _handle_game_command(self, msg: NormalizedMessage) -> str:
+        """Обработка игровой команды."""
+        args = msg.command_args if msg.command_args else []
+
+        if not args:
+            return (
+                "🎮 <b>Игровые команды:</b>\n\n"
+                "/game start [name] — начать игру\n"
+                "/game status — статус игры\n"
+                "/game continue — продолжить\n"
+                "/game log — журнал событий\n"
+                "/game end — завершить игру"
+            )
+
+        action = args[0].lower()
+
+        if action == "start":
+            name = " ".join(args[1:]) if len(args) > 1 else f"DnD Session {msg.user_id}"
+            return await self.game_manager.start_session(msg.chat_id, msg.user_id, name)
+        if action == "status":
+            return await self.game_manager.get_status(msg.chat_id)
+        if action == "continue":
+            return await self.game_manager.resume_session(msg.chat_id)
+        if action == "log":
+            return await self.game_manager.get_event_log(msg.chat_id)
+        if action == "end":
+            return await self.game_manager.end_session(msg.chat_id)
+
+        return "❌ Неизвестная команда. Используй /game для списка команд."
+
+    # ========== КОМАНДЫ ==========
+
+    async def handle_summary_command(self, chat_id: int) -> str:
+        summary = await self.summarizer.get_latest_summary(chat_id)
+        if summary:
+            return f"📊 <b>Последняя сводка:</b>\n\n{summary.content}"
+        return "📊 Сводка пока не создана. Она появится завтра."
+
+    async def handle_memory_command(self, user_id: int, chat_id: int) -> str:
+        items = await self.memory_engine.get_recent_memories(user_id, chat_id, limit=10)
+        if not items:
+            return "🧠 У меня пока нет воспоминаний."
+
+        by_type: dict[str, list] = {}
+        for item in items:
+            t = item.type.value
+            if t not in by_type:
+                by_type[t] = []
+            by_type[t].append(item.content)
+
+        lines = ["🧠 <b>Что я помню:</b>"]
+        for t, contents in by_type.items():
+            lines.append(f"\n📁 <b>{t}:</b>")
+            for c in contents[:3]:
+                lines.append(f"  • {c}")
+
+        return "\n".join(lines)
+
+    async def handle_profile_command(self, user_id: int) -> str:
+        profile = await self.memory_engine.get_user_profile(user_id)
+        if not profile:
+            return "👤 Профиль ещё не создан. Пообщайся со мной!"
+
+        parts = [f"👤 <b>{profile.display_name or 'User'}</b>"]
+        if profile.traits:
+            import json
+            traits = json.loads(profile.traits)
+            if traits:
+                parts.append(f"\n🏷️ <b>Инфо:</b>")
+                for t in traits[:5]:
+                    parts.append(f"  • {t}")
+        if profile.interests:
+            import json
+            interests = json.loads(profile.interests)
+            if interests:
+                parts.append(f"\n🎯 <b>Интересы:</b>")
+                for i in interests[:5]:
+                    parts.append(f"  • {i}")
+        if profile.relationships:
+            import json
+            rels = json.loads(profile.relationships)
+            if rels:
+                parts.append(f"\n🤝 <b>Связи:</b>")
+                for r in rels[:5]:
+                    parts.append(f"  • {r}")
+        if profile.summary:
+            parts.append(f"\n📝 <b>О тебе:</b> {profile.summary}")
+
+        return "\n".join(parts)
+
+    async def handle_mode_command(self, chat_id: int, new_mode: str) -> str:
+        from src.memory_engine.engine import MemoryEngine
+        me = MemoryEngine()
+        valid_modes = ["observer", "assistant", "social", "game_master"]
+        if new_mode not in valid_modes:
+            return f"❌ Неизвестный режим. Доступные: {', '.join(valid_modes)}"
+
+        await me.set_chat_mode(chat_id, new_mode)  # type: ignore[arg-type]
+        return f"✅ Режим изменён на: <code>{new_mode}</code>"
+
+    async def get_current_mode(self, chat_id: int) -> str:
+        from src.memory_engine.engine import MemoryEngine
+        me = MemoryEngine()
+        mode = await me.get_chat_mode(chat_id)
+        settings_obj = self._get_settings(chat_id)
+        return (
+            f"🤖 Режим: <code>{mode.value if hasattr(mode, 'value') else mode}</code>\n"
+            f"Активность: <code>{settings_obj.activity.value}</code>\n"
+            f"Только по имени: <code>{settings_obj.mention_only}</code>"
+        )
+
+    async def handle_game_command(self, user_id: int, chat_id: int, args: list[str]) -> str:
+        return await self._handle_game_command(
+            NormalizedMessage(
+                telegram_id=0, chat_id=chat_id, chat_type="private",
+                user_id=user_id, username=None, first_name=None,
+                text="/game " + " ".join(args), reply_to_message_id=None,
+                is_mention_bot=False, is_command=True, command="game",
+                command_args=args, language_code=None,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+    async def handle_settings_command(self, chat_id: int) -> str:
+        s = self._get_settings(chat_id)
+        return (
+            f"⚙️ <b>Настройки чата {chat_id}:</b>\n\n"
+            f"Режим: <code>{s.mode}</code>\n"
+            f"Активность: <code>{s.activity.value}</code>\n"
+            f"Только по имени: <code>{s.mention_only}</code>\n"
+            f"Модель: <code>{settings.llm_model}</code>\n"
+            f"Провайдер: <code>{settings.llm_provider}</code>"
+        )
+
+    async def handle_model_command(self) -> str:
+        return (
+            f"🧠 <b>Модель:</b>\n\n"
+            f"Провайдер: <code>{settings.llm_provider}</code>\n"
+            f"Модель: <code>{settings.llm_model}</code>\n"
+            f"Fallback: <code>{settings.llm_fallback_provider}</code>"
+        )
+
+    async def handle_budget_command(self) -> str:
+        usage = await self.memory_engine.get_today_usage()
+        remaining = settings.daily_token_budget - (usage.tokens_prompt + usage.tokens_completion)
+        return (
+            f"📊 <b>Бюджет токенов:</b>\n\n"
+            f"Использовано: {usage.tokens_prompt + usage.tokens_completion}\n"
+            f"Осталось: {remaining}\n"
+            f"Лимит: {settings.daily_token_budget}\n"
+            f"Запросов сегодня: {usage.requests_count}"
+        )
+
+    async def handle_silence_command(self, chat_id: int, minutes: int) -> str:
+        settings_obj = self._get_settings(chat_id)
+        settings_obj.silence(minutes)
+        response = bot_personality.get_silence_response()
+        return f"{response} ({minutes} мин)"
+
+    async def handle_remind_command(self, user_id: int, chat_id: int, args: str) -> str:
+        """Обработка команды /remind."""
+        # Пробуем распарсить как натуральное напоминание
+        full_text = f"напомни {args}"
+        parsed = reminder_manager.parse_natural_reminder(full_text)
+
+        if not parsed:
+            return (
+                "⏰ Не понял формат времени.\n\n"
+                "Примеры:\n"
+                "• «напомни через 30 минут что проверить почту»\n"
+                "• «напомни завтра в 15:00 что совещание»\n"
+                "• «напомни в пятницу что сдать отчёт»"
+            )
+
+        remind_at, content = parsed
+        reminder = await reminder_manager.create_reminder(
+            chat_id=chat_id,
+            user_id=user_id,
+            content=content,
+            remind_at=remind_at,
+        )
+
+        time_str = remind_at.strftime("%d.%m.%Y в %H:%M")
+        return f"📝 Запомнил! Напомню {time_str}:\n{content}"
+
+    async def handle_reminders_command(self, user_id: int, chat_id: int) -> str:
+        """Показать активные напоминания."""
+        reminders = await reminder_manager.get_user_reminders(chat_id, user_id)
+
+        if not reminders:
+            return "⏰ У тебя нет активных напоминаний."
+
+        lines = ["⏰ <b>Твои напоминания:</b>"]
+        for r in reminders:
+            time_str = r.remind_at.strftime("%d.%m %H:%M")
+            lines.append(f"• {time_str} — {r.content[:50]}")
+
+        return "\n".join(lines)

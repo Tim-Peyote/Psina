@@ -1,0 +1,33 @@
+from src.database.models.user import (
+    Base,
+    Chat,
+    ChatType,
+    GameEvent,
+    GameSession,
+    MemoryItem,
+    MemoryType,
+    Message,
+    MessageRole,
+    Summary,
+    UsageStat,
+    User,
+    UserProfile,
+)
+from src.database.models.reminder import Reminder
+
+__all__ = [
+    "Base",
+    "Chat",
+    "ChatType",
+    "GameEvent",
+    "GameSession",
+    "MemoryItem",
+    "MemoryType",
+    "Message",
+    "MessageRole",
+    "Reminder",
+    "Summary",
+    "UsageStat",
+    "User",
+    "UserProfile",
+]
