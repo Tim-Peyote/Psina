@@ -20,6 +20,7 @@ from src.orchestration_engine.censorship_manager import censorship_manager, Cens
 from src.orchestration_engine.vibe_adapter import vibe_adapter
 from src.orchestration_engine.message_router import message_router
 from src.orchestration_engine.reaction_engine import reaction_engine
+from src.web_search_engine.processor import search_processor
 
 logger = structlog.get_logger()
 
@@ -114,12 +115,14 @@ async def handle_help(message: Message) -> None:
         "/silence [minutes] — замолчать на N минут\n"
         "/remind [текст] — создать напоминание\n"
         "/reminders — список напоминаний\n"
+        "/search [запрос] — поиск в интернете\n"
         "/censorship [strict|moderate|free] — уровень цензуры\n"
         "/vibe — текущий вайб чата\n\n"
         f"💡 <b>Совет:</b> Просто позови по имени — «{settings.bot_name}, ...» "
         f"или «{settings.bot_aliases[0]}, ...»\n\n"
         f"🗣️ <b>Речью:</b> «заткнись», «будь поактивнее», «сбавь», "
-        f"«убери цензуру», «пофильтруй», «напомни завтра в 15 что встреча»"
+        f"«убери цензуру», «пофильтруй», «напомни завтра в 15 что встреча»\n"
+        f"🔍 <b>Поиск:</b> «какая погода в Москве», «кто выиграл матч», «курс биткоина»"
     )
     await _reply(message, help_text)
 
@@ -284,6 +287,27 @@ async def handle_vibe(message: Message) -> None:
         f"Сообщений проанализировано: {profile.messages_analyzed}\n\n"
         f"Псина подстраивается под этот стиль автоматически."
     )
+
+
+@router.message(Command("search"))
+async def handle_search(message: Message, command: CommandObject) -> None:
+    """Команда /search — ручной поиск в интернете."""
+    query = (command.args or "").strip()
+
+    if not query:
+        await _reply(message,
+            "🔍 <b>Поиск в интернете:</b>\n\n"
+            f"Просто спроси меня — «{settings.bot_name}, какая погода в Москве?»\n"
+            f"Или используй: /search запрос\n\n"
+            f"Примеры:\n"
+            f"• «кто выиграл матч Барсы»\n"
+            f"• «курс биткоина»\n"
+            f"• «что случилось с ...»"
+        )
+        return
+
+    result = await search_processor.search_and_answer(query)
+    await _reply(message, result)
 
 
 @router.message(F.text)

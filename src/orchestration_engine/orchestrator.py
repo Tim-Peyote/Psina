@@ -32,6 +32,8 @@ from src.orchestration_engine.vibe_adapter import vibe_adapter
 from src.orchestration_engine.censorship_manager import censorship_manager
 from src.orchestration_engine.abuse_detector import abuse_detector
 from src.workers.reminders import reminder_manager
+from src.web_search_engine.intent_detector import search_intent_detector
+from src.web_search_engine.processor import search_processor
 
 logger = structlog.get_logger()
 
@@ -167,6 +169,28 @@ class Orchestrator:
         )
 
         # ===== ФАЗА 3: ДЕЙСТВУЕМ =====
+
+        # 3.5 Web search check — если нужен интернет
+        search_intent = search_intent_detector.detect(msg.text)
+        if search_intent.is_search_needed:
+            logger.info(
+                "Web search triggered",
+                query=search_intent.query,
+                confidence=search_intent.confidence,
+                reason=search_intent.reason,
+            )
+            # Проверяем что это обращение к боту или сессия
+            trigger = trigger_system.evaluate(
+                msg.text,
+                is_reply=msg.reply_to_message_id is not None,
+                reply_to_bot=False,
+                in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
+            )
+            if trigger.level == ConfidenceLevel.HIGH or msg.is_private:
+                search_response = await search_processor.search_and_answer(search_intent.query)
+                # Регистрируем как сообщение бота для reply detection
+                message_router.register_bot_message(msg.telegram_id)
+                return search_response
 
         # Behavior control — меняем режим
         if decision.route == MessageRoute.BEHAVIOR_CONTROL:

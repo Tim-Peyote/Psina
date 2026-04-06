@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # Censorship
     default_censorship_level: str = "moderate"
 
+    # Web search
+    web_search_enabled: bool = True
+    web_search_unlimited: bool = True
+    web_search_max_per_hour: int = 100
+    web_search_max_per_day: int = 500
+    web_search_cache_ttl: int = 300  # 5 минут
+    web_search_max_results: int = 5
+
     # Admin API
     admin_api_host: str = "0.0.0.0"
     admin_api_port: int = 8000
