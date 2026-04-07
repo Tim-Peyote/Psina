@@ -198,19 +198,31 @@ class SkillRegistry:
     def get_skill_handler(self, slug: str) -> object | None:
         """Get the handler module for a skill.
 
-        Handlers are expected at: src.skills.{slug}.handler
+        Priority:
+        1. Custom handler.py in skill directory (ExecutableSkill)
+        2. Default handler (PromptOnlySkill)
+
+        This implements the split: prompt-only vs executable skills.
         """
         slug_underscored = slug.replace("-", "_")
+
+        # Check for custom handler (ExecutableSkill)
         if slug_underscored in self._loaded_handlers:
             return self._loaded_handlers[slug_underscored]
 
         try:
             module = importlib.import_module(f"src.skills.{slug_underscored}.handler")
             self._loaded_handlers[slug_underscored] = module
+            logger.debug("Loaded custom handler", slug=slug, mode="executable")
             return module
         except ImportError:
-            logger.debug("No handler module for skill", slug=slug)
-            return None
+            pass
+
+        # Fallback: PromptOnlySkill (default handler)
+        from src.skill_system.default_handler import process_message as default_handler
+        self._loaded_handlers[slug_underscored] = default_handler
+        logger.debug("Using default handler", slug=slug, mode="prompt-only")
+        return default_handler
 
     async def update_skill_config(self, slug: str, config: dict) -> bool:
         """Update skill configuration."""

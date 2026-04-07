@@ -154,12 +154,24 @@
 
 Скиллы следуют стандарту **SKILL.md** — это markdown-файл с YAML frontmatter, который описывает имя, описание и инструкции.
 
-**Структура:**
+Система поддерживает **два режима исполнения**:
+
+#### PromptOnlySkill — только инструкции
+Для простых скиллов достаточно одного `SKILL.md`. Бот загрузит инструкции и передаст их LLM.
+
 ```
-src/skills/{имя_скилла}/
-├── SKILL.md          # name, description, instructions (ОСНОВНОЙ ФАЙЛ)
-├── handler.py        # Тонкий wrapper: load SKILL.md → LLM → save state
-└── dice.py           # Доп. утилиты (опционально)
+src/skills/my_skill/
+└── SKILL.md          # имя, описание, инструкции
+# handler.py НЕ НУЖЕН — используется дефолтный
+```
+
+#### ExecutableSkill — инструкции + кастомная логика
+Если скиллу нужна своя логика (команды, броски, API, управление состоянием) — добавь `handler.py`.
+
+```
+src/skills/my_skill/
+├── SKILL.md          # имя, описание, инструкции
+└── handler.py        # async def process_message(msg, chat_id, user_id) -> str
 ```
 
 **SKILL.md** содержит:
@@ -176,9 +188,23 @@ license: MIT
 **Как это работает (Progressive Disclosure):**
 1. **Discovery** — при старте читается только `name` + `description` всех скиллов (~50-100 токенов каждый)
 2. **Activation** — когда задача совпадает с `description`, загружается полный SKILL.md (~5000 токенов)
-3. **Execution** — handler получает полный текст инструкций и передаёт LLM
+3. **Execution** — если есть `handler.py` — вызывается он (ExecutableSkill), иначе — дефолтный handler (PromptOnlySkill)
+
+**Архитектура скиллов:**
+- **skill = инструкция/правила** (SKILL.md)
+- **tool = реальное действие** (dice.py, web_search, memory API, state_manager)
+- **handler = исполнитель** (кастомный для ExecutableSkill, дефолтный для PromptOnlySkill)
 
 **Главный принцип:** LLM не хранит знания внутри себя — она получает их из подключаемых источников по мере необходимости.
+
+### Примеры скиллов
+
+| Скилл | Режим | Зачем свой handler |
+|---|---|---|
+| **RPG Game Master** | ExecutableSkill | Броски костей, команды (!roll, !hp), Session Zero, управление состоянием |
+| **Переводчик** | PromptOnlySkill | Достаточно инструкций «ты переводчик EN→RU» |
+| **Поэт** | PromptOnlySkill | Достаточно инструкций «ты пишешь стихи» |
+| **Погода** | ExecutableSkill | Вызов внешнего API, парсинг ответа |
 
 ### Что уже готово для расширения
 
@@ -236,14 +262,14 @@ src/
 │   ├── registry.py          # Реестр: discovery → activation → execution
 │   ├── router.py            # Роутер: команда → сессия → триггер → LLM
 │   ├── state_manager.py     # CRUD состояния на (skill, chat)
-│   └── skill_md_parser.py   # Парсер SKILL.md (lazy loading)
+│   ├── skill_md_parser.py   # Парсер SKILL.md (lazy loading)
+│   └── default_handler.py   # PromptOnlySkill (fallback без handler.py)
 │
 ├── skills/                  # Установленные скиллы
-│   └── agent_rpg/           # RPG Game Master
+│   └── agent_rpg/           # RPG Game Master (ExecutableSkill)
 │       ├── SKILL.md         # name, description, инструкции (по стандарту)
-│       ├── handler.py       # Тонкий wrapper: load SKILL.md → LLM → save state
-│       ├── dice.py          # Броски костей (D20, PbtA, adv/dis)
-│       └── register.py      # No-op (auto-discovery)
+│       ├── handler.py       # Кастомная логика: Session Zero, броски, команды
+│       └── dice.py          # Утилита: броски костей (D20, PbtA, adv/dis)
 │
 ├── orchestration_engine/    # Мозг: маршрутизация, триггеры, сессии, скиллы
 │   ├── orchestrator.py      # Центральный пайплайн

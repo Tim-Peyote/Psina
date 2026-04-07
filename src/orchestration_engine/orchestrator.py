@@ -461,14 +461,24 @@ class Orchestrator:
         if not skill_slug:
             return None
 
-        # Get skill handler module
+        # Activate skill (load full SKILL.md)
+        skill = await skill_registry.activate_skill_by_slug(skill_slug)
+
+        # Get handler (ExecutableSkill module or PromptOnlySkill function)
         handler = skill_registry.get_skill_handler(skill_slug)
-        if not handler or not hasattr(handler, "process_message"):
+        if not handler:
             logger.warning("No handler for skill", skill=skill_slug)
             return None
 
         try:
-            return await handler.process_message(msg, msg.chat_id, msg.user_id)
+            # PromptOnlySkill: default_handler(skill, msg, chat_id, user_id)
+            # ExecutableSkill: handler.process_message(msg, chat_id, user_id)
+            if callable(handler) and not hasattr(handler, "process_message"):
+                # Default handler (function)
+                return await handler(skill, msg, msg.chat_id, msg.user_id)
+            else:
+                # Custom handler (module with process_message)
+                return await handler.process_message(msg, msg.chat_id, msg.user_id)
         except Exception:
             logger.exception("Skill handler failed", skill=skill_slug)
             return "⚠️ Произошла ошибка в скилле. Попробуй ещё раз."
