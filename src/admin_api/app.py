@@ -23,12 +23,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    from src.admin_api.routes import memory, users, usage, settings as settings_route
+    from src.admin_api.routes import memory, users, usage, settings as settings_route, skills
 
     app.include_router(memory.router, prefix="/api/memory", tags=["memory"])
     app.include_router(users.router, prefix="/api/users", tags=["users"])
     app.include_router(usage.router, prefix="/api/usage", tags=["usage"])
     app.include_router(settings_route.router, prefix="/api/settings", tags=["settings"])
+    app.include_router(skills.router, prefix="/api/skills", tags=["skills"])
 
     @app.get("/health")
     async def health_check() -> dict:

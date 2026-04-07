@@ -117,7 +117,9 @@ async def handle_help(message: Message) -> None:
         "/reminders — список напоминаний\n"
         "/search [запрос] — поиск в интернете\n"
         "/censorship [strict|moderate|free] — уровень цензуры\n"
-        "/vibe — текущий вайб чата\n\n"
+        "/vibe — текущий вайб чата\n"
+        "/skills — список скиллов\n"
+        "/rpg [start|stop|continue|roll] — RPG Game Master\n\n"
         f"💡 <b>Совет:</b> Просто позови по имени — «{settings.bot_name}, ...» "
         f"или «{settings.bot_aliases[0]}, ...»\n\n"
         f"🗣️ <b>Речью:</b> «заткнись», «будь поактивнее», «сбавь», "
@@ -376,3 +378,62 @@ async def bot_removed_from_chat(event: ChatMemberUpdated) -> None:
 
     # Память НЕ удаляем — на случай если бота вернут
     # Но помечаем что чат неактивен
+
+
+# ========== SKILL COMMANDS ==========
+
+
+@router.message(Command("skills"))
+async def handle_skills(message: Message) -> None:
+    """Команда /skills — список доступных скиллов."""
+    chat_id = message.chat.id
+    result = await orchestrator.handle_skills_list_command(chat_id)
+    await _reply(message, result)
+
+
+@router.message(Command("rpg"))
+async def handle_rpg(message: Message, command: CommandObject) -> None:
+    """Команда /rpg — управление RPG скиллом."""
+    chat_id = message.chat.id
+    args = command.args.strip() if command.args else ""
+
+    if not args or args.lower() == "start":
+        result = await orchestrator.handle_skill_activate_command(chat_id, "agent_rpg")
+    elif args.lower() in ("stop", "exit", "end"):
+        result = await orchestrator.handle_skill_deactivate_command(chat_id, "agent_rpg")
+    elif args.lower() == "continue":
+        result = await orchestrator.handle_skill_activate_command(chat_id, "agent_rpg")
+    elif args.lower() == "status":
+        from src.skill_system.state_manager import skill_state_manager
+        state = await skill_state_manager.get_state("agent_rpg", chat_id)
+        phase = state.get("phase", "not_started")
+        if phase == "session_zero":
+            step = state.get("step", 0)
+            result = f"🎲 Сессия Ноль, шаг {step}/5"
+        elif phase == "playing":
+            world = state.get("world", {})
+            chars = state.get("characters", {})
+            char = chars.get(str(message.from_user.id), {}) if message.from_user else {}
+            hp = char.get("hp", {})
+            lines = [
+                f"🎮 Играем",
+                f"🌍 {world.get('setting', '?')}",
+                f"🎯 Система: {world.get('system', '?')}",
+            ]
+            if char.get("name"):
+                lines.append(f"⚔️ {char['name']} (HP: {hp.get('current', '?')}/{hp.get('max', '?')})")
+            result = "\n".join(lines)
+        elif phase == "paused":
+            result = "⏸️ На паузе. /rpg continue"
+        else:
+            result = "🏁 Игра завершена. /rpg start для новой"
+    else:
+        result = (
+            "🎲 <b>RPG команды:</b>\n\n"
+            "/rpg — начать игру (Сессия Ноль)\n"
+            "/rpg stop — закончить\n"
+            "/rpg continue — продолжить после паузы\n"
+            "/rpg status — текущее состояние\n\n"
+            "Или просто напиши что-нибудь в стиле RPG!"
+        )
+    await _reply(message, result)

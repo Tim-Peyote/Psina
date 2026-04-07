@@ -206,3 +206,50 @@ class MemoryExtractionBatch(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Skill(Base):
+    """Installed skill registry."""
+
+    __tablename__ = "skills"
+
+    slug: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[str] = mapped_column(String(32), default="1.0.0")
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    triggers: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    config: Mapped[dict | None] = mapped_column(nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SkillState(Base):
+    """Per-chat isolated state for each skill."""
+
+    __tablename__ = "skill_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    skill_slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    state_json: Mapped[dict] = mapped_column(nullable=False, server_default="{}")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SkillEvent(Base):
+    """Audit log for skill actions."""
+
+    __tablename__ = "skill_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    skill_slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata: Mapped[dict | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

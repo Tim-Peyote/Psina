@@ -37,6 +37,9 @@ from src.web_search_engine.processor import search_processor
 # New memory services
 from src.memory_services.context_pack import context_pack_builder
 from src.memory_services.retrieval_service import retrieval_service
+# Skill system
+from src.skill_system.router import skill_router
+from src.skill_system.registry import skill_registry
 
 logger = structlog.get_logger()
 
@@ -133,6 +136,21 @@ class Orchestrator:
                 return abuse_result["response_text"]
             if abuse_result["response_text"] and abuse_result["action"] in ("warning", "strict_warning"):
                 return abuse_result["response_text"]
+
+        # ===== ФАЗА 1.7: МАРШРУТИЗАЦИЯ СКИЛЛОВ =====
+        skill_decision = await skill_router.route(msg)
+        if skill_decision.activated:
+            logger.info(
+                "Skill activated",
+                skill=skill_decision.skill_slug,
+                chat_id=msg.chat_id,
+                confidence=skill_decision.confidence,
+                reason=skill_decision.reason,
+            )
+            # Activate skill session if not already active
+            await skill_router.activate_skill(msg.chat_id, skill_decision.skill_slug)
+            # Delegate to skill handler
+            return await self._handle_skill(msg, skill_decision)
 
         # ===== ФАЗА 2: РЕШАЕМ ЧТО ДЕЛАТЬ =====
 
@@ -433,6 +451,28 @@ class Orchestrator:
         # Unknown action
         return ""
 
+    async def _handle_skill(
+        self,
+        msg: NormalizedMessage,
+        decision,  # SkillDecision type
+    ) -> str | None:
+        """Delegate message processing to an active skill handler."""
+        skill_slug = decision.skill_slug
+        if not skill_slug:
+            return None
+
+        # Get skill handler module
+        handler = skill_registry.get_skill_handler(skill_slug)
+        if not handler or not hasattr(handler, "process_message"):
+            logger.warning("No handler for skill", skill=skill_slug)
+            return None
+
+        try:
+            return await handler.process_message(msg, msg.chat_id, msg.user_id)
+        except Exception:
+            logger.exception("Skill handler failed", skill=skill_slug)
+            return "⚠️ Произошла ошибка в скилле. Попробуй ещё раз."
+
     async def _handle_game_command(self, msg: NormalizedMessage) -> str:
         """Обработка игровой команды."""
         args = msg.command_args if msg.command_args else []
@@ -631,3 +671,40 @@ class Orchestrator:
             lines.append(f"• {time_str} — {r.content[:50]}")
 
         return "\n".join(lines)
+
+    # ========== SKILL COMMANDS ==========
+
+    async def handle_skills_list_command(self, chat_id: int) -> str:
+        """Show available and active skills."""
+        skills = await skill_registry.get_all_skills()
+        if not skills:
+            return "🧩 Установленных скиллов нет."
+
+        lines = ["🧩 <b>Доступные скиллы:</b>"]
+        for skill in skills:
+            status = "✅" if skill.is_active else "⏸️"
+            lines.append(f"\n{status} <b>{skill.name}</b> ({skill.slug})")
+            lines.append(f"  {skill.description[:120]}...")
+
+        # Show active skills for this chat
+        active = await skill_router.skill_state_manager.get_all_active_skills(chat_id)
+        if active:
+            lines.append(f"\n🎮 <b>Активны в этом чате:</b> {', '.join(active)}")
+
+        return "\n".join(lines)
+
+    async def handle_skill_activate_command(self, chat_id: int, skill_slug: str) -> str:
+        """Manually activate a skill."""
+        slug = skill_slug.lower().strip()
+        skill = skill_registry.get_skill(slug)
+        if not skill:
+            return f"❌ Скилл '{slug}' не найден."
+
+        await skill_router.activate_skill(chat_id, slug)
+        return f"✅ Скилл <b>{skill.name}</b> активирован."
+
+    async def handle_skill_deactivate_command(self, chat_id: int, skill_slug: str) -> str:
+        """Manually deactivate a skill."""
+        slug = skill_slug.lower().strip()
+        await skill_router.skill_state_manager.delete_state(slug, chat_id)
+        return f"⏹️ Скилл <b>{slug}</b> деактивирован."
