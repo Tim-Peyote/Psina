@@ -236,7 +236,7 @@ class SkillState(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     skill_slug: Mapped[str] = mapped_column(String(64), nullable=False)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    state_json: Mapped[dict] = mapped_column(nullable=False, server_default="{}")
+    state_json: Mapped[dict] = mapped_column(JSONB(), nullable=False, server_default="{}")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
