@@ -8,6 +8,7 @@ Create Date: 2026-04-06
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+from pgvector.sqlalchemy import Vector
 
 revision = "a001_initial"
 down_revision = None
@@ -70,8 +71,16 @@ def upgrade() -> None:
         ),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("embedding", postgresql.BYTEA(), nullable=True),
+        sa.Column("embedding_vector", Vector(768), nullable=True),
         sa.Column("confidence", sa.Float(), server_default=sa.text("0.5")),
         sa.Column("relevance", sa.Float(), server_default=sa.text("1.0")),
+        sa.Column("frequency", sa.Integer(), server_default=sa.text("1")),
+        sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("access_count", sa.Integer(), server_default=sa.text("0")),
+        sa.Column("ttl_seconds", sa.Integer(), nullable=True),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.text("true")),
+        sa.Column("consolidated_from_ids", postgresql.ARRAY(sa.Integer()), nullable=True),
+        sa.Column("tags", postgresql.ARRAY(sa.Text()), nullable=True),
         sa.Column("source", sa.String(64), server_default=sa.text("'chat'")),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
@@ -80,17 +89,11 @@ def upgrade() -> None:
     op.create_index("ix_memory_items_user_id", "memory_items", ["user_id"])
     op.create_index("ix_memory_items_type", "memory_items", ["type"])
 
-    op.execute(
-        """
-        ALTER TABLE memory_items
-        ADD COLUMN IF NOT EXISTS embedding_vector vector(768)
-        """
-    )
-
     op.create_table(
         "user_profiles",
         sa.Column("id", sa.Integer(), sa.Identity(), primary_key=True),
-        sa.Column("user_id", sa.BigInteger(), unique=True, nullable=False),
+        sa.Column("user_id", sa.BigInteger(), nullable=False),
+        sa.Column("chat_id", sa.BigInteger(), nullable=False),
         sa.Column("display_name", sa.String(255), nullable=True),
         sa.Column("traits", sa.Text(), nullable=True),
         sa.Column("interests", sa.Text(), nullable=True),
@@ -99,6 +102,8 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
     )
+    op.create_index("ix_user_profiles_chat_id", "user_profiles", ["chat_id"])
+    op.create_index("ix_user_profiles_user_id", "user_profiles", ["user_id"])
 
     op.create_table(
         "summaries",
@@ -110,6 +115,36 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
     op.create_index("ix_summaries_chat_date", "summaries", ["chat_id", "date"])
+
+    op.create_table(
+        "memory_summaries",
+        sa.Column("id", sa.Integer(), sa.Identity(), primary_key=True),
+        sa.Column("chat_id", sa.BigInteger(), nullable=False),
+        sa.Column("user_id", sa.BigInteger(), nullable=True),
+        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("topics", postgresql.ARRAY(sa.Text()), nullable=True),
+        sa.Column("start_message_id", sa.Integer(), nullable=True),
+        sa.Column("end_message_id", sa.Integer(), nullable=True),
+        sa.Column("start_time", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("end_time", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("message_count", sa.Integer(), server_default=sa.text("0")),
+        sa.Column("embedding_vector", Vector(768), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+
+    op.create_table(
+        "memory_extraction_batches",
+        sa.Column("id", sa.Integer(), sa.Identity(), primary_key=True),
+        sa.Column("chat_id", sa.BigInteger(), nullable=False),
+        sa.Column("start_message_id", sa.Integer(), nullable=False),
+        sa.Column("end_message_id", sa.Integer(), nullable=False),
+        sa.Column("message_count", sa.Integer(), nullable=False),
+        sa.Column("items_extracted", sa.Integer(), server_default=sa.text("0")),
+        sa.Column("status", sa.String(32), server_default=sa.text("'pending'")),
+        sa.Column("error_message", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
+    )
 
     op.create_table(
         "usage_stats",
@@ -150,11 +185,54 @@ def upgrade() -> None:
     )
     op.create_index("ix_game_events_session_id", "game_events", ["session_id"])
 
+    op.create_table(
+        "skills",
+        sa.Column("slug", sa.String(64), primary_key=True),
+        sa.Column("name", sa.String(128), nullable=False),
+        sa.Column("description", sa.Text(), nullable=False),
+        sa.Column("version", sa.String(32), server_default=sa.text("'1.0.0'")),
+        sa.Column("system_prompt", sa.Text(), nullable=True),
+        sa.Column("triggers", postgresql.ARRAY(sa.Text()), nullable=True),
+        sa.Column("config", postgresql.JSONB(), nullable=True),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.text("true")),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
+    )
+
+    op.create_table(
+        "skill_state",
+        sa.Column("id", sa.Integer(), sa.Identity(), primary_key=True),
+        sa.Column("skill_slug", sa.String(64), nullable=False),
+        sa.Column("chat_id", sa.BigInteger(), nullable=False),
+        sa.Column("state_json", postgresql.JSONB(), nullable=False, server_default=sa.text("'{}'")),
+        sa.Column("is_active", sa.Boolean(), server_default=sa.text("true")),
+        sa.Column("last_activity_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+    op.create_index("ix_skill_state_slug_chat", "skill_state", ["skill_slug", "chat_id"])
+
+    op.create_table(
+        "skill_events",
+        sa.Column("id", sa.Integer(), sa.Identity(), primary_key=True),
+        sa.Column("skill_slug", sa.String(64), nullable=False),
+        sa.Column("chat_id", sa.BigInteger(), nullable=False),
+        sa.Column("event_type", sa.String(64), nullable=False),
+        sa.Column("content", sa.Text(), nullable=True),
+        sa.Column("metadata", postgresql.JSONB(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+    )
+    op.create_index("ix_skill_events_slug", "skill_events", ["skill_slug"])
+
 
 def downgrade() -> None:
+    op.drop_table("skill_events")
+    op.drop_table("skill_state")
+    op.drop_table("skills")
     op.drop_table("game_events")
     op.drop_table("game_sessions")
     op.drop_table("usage_stats")
+    op.drop_table("memory_extraction_batches")
+    op.drop_table("memory_summaries")
     op.drop_table("summaries")
     op.drop_table("user_profiles")
     op.drop_table("memory_items")
