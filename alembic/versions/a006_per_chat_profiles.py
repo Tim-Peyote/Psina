@@ -21,55 +21,58 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 1. Add chat_id column (nullable first to allow existing data)
-    op.add_column(
-        "user_profiles",
-        sa.Column("chat_id", sa.BigInteger(), nullable=True),
-    )
+    # Check if chat_id already exists (idempotent)
+    conn = op.get_bind()
+    has_chat_id = conn.execute(
+        sa.text(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='user_profiles' AND column_name='chat_id')"
+        )
+    ).scalar()
 
-    # 2. For existing profiles without chat_id, set a sentinel value
-    #    We use 0 as default for private chats (will be populated properly on next update)
-    op.execute(
-        "UPDATE user_profiles SET chat_id = 0 WHERE chat_id IS NULL"
-    )
+    if not has_chat_id:
+        # 1. Add chat_id column
+        op.add_column(
+            "user_profiles",
+            sa.Column("chat_id", sa.BigInteger(), nullable=True),
+        )
 
-    # 3. Make chat_id NOT NULL
-    op.alter_column(
-        "user_profiles",
-        "chat_id",
-        nullable=False,
-        existing_type=sa.BigInteger(),
-    )
+        # 2. Set sentinel value for existing profiles
+        op.execute(
+            "UPDATE user_profiles SET chat_id = 0 WHERE chat_id IS NULL"
+        )
 
-    # 4. Drop unique constraint on user_id and add composite unique
-    # PostgreSQL: drop the auto-created unique index first
+        # 3. Make chat_id NOT NULL
+        op.alter_column(
+            "user_profiles",
+            "chat_id",
+            nullable=False,
+            existing_type=sa.BigInteger(),
+        )
+
+    # 4. Drop unique constraint on user_id
     op.drop_index("ix_user_profiles_user_id", table_name="user_profiles", if_exists=True)
-    
-    # The unique constraint might be named differently, try to drop it
+
     op.execute("""
         DO $$
         BEGIN
-            -- Try to drop the unique constraint on user_id
             ALTER TABLE user_profiles DROP CONSTRAINT IF EXISTS uq_user_profiles_user_id;
-            -- Also try common auto-generated name
             ALTER TABLE user_profiles DROP CONSTRAINT IF EXISTS user_profiles_user_id_key;
         END
         $$;
     """)
 
-    # 5. Create composite unique index
-    op.create_unique_constraint(
-        "uq_user_profiles_user_chat",
-        "user_profiles",
-        ["user_id", "chat_id"],
-    )
+    # 5. Create composite unique index (if doesn't exist)
+    op.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_user_profiles_user_chat
+        ON user_profiles (user_id, chat_id)
+    """)
 
     # 6. Create index for fast lookups
-    op.create_index(
-        "ix_user_profiles_chat_user",
-        "user_profiles",
-        ["chat_id", "user_id"],
-    )
+    op.execute("""
+        CREATE INDEX IF NOT EXISTS ix_user_profiles_chat_user
+        ON user_profiles (chat_id, user_id)
+    """)
 
 
 def downgrade() -> None:
