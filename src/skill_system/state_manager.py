@@ -128,7 +128,7 @@ class SkillStateManager:
                     chat_id=chat_id,
                     event_type=event_type,
                     content=content,
-                    metadata=metadata,
+                    event_metadata=metadata,
                 )
             )
             await session.commit()
