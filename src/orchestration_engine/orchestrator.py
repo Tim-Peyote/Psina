@@ -34,6 +34,9 @@ from src.orchestration_engine.abuse_detector import abuse_detector
 from src.workers.reminders import reminder_manager
 from src.web_search_engine.intent_detector import search_intent_detector
 from src.web_search_engine.processor import search_processor
+# New memory services
+from src.memory_services.context_pack import context_pack_builder
+from src.memory_services.retrieval_service import retrieval_service
 
 logger = structlog.get_logger()
 
@@ -111,10 +114,10 @@ class Orchestrator:
         # 4. Трекаем связи
         await relationship_engine.extract_relationship_from_message(msg)
 
-        # 5. Обновляем профили
+        # 5. Обновляем профили (per-chat)
         if len(msg.text) > 30:
-            await fact_extractor.update_profile_from_facts(msg.user_id)
-            await relationship_engine.update_profile_relationships(msg.user_id)
+            await fact_extractor.update_profile_from_facts(msg.user_id, msg.chat_id)
+            await relationship_engine.update_profile_relationships(msg.user_id, msg.chat_id)
 
         # ===== ФАЗА 1.5: ПРОВЕРЯЕМ НАПОМИНАНИЕ =====
         reminder = await self._try_parse_reminder(msg)
@@ -325,21 +328,23 @@ class Orchestrator:
         session_ctx = session_manager.get_session_context_for_llm(msg.chat_id, msg.user_id)
         context["session_context"] = session_ctx
 
-        # Формируем сообщения
-        llm_messages = [
-            {"role": "system", "content": system_prompt},
-        ]
+        # ===== НОВАЯ СИСТЕМА ПАМЯТИ: используем context pack builder =====
+        # Собираем ограниченный контекст с релевантной памятью
+        web_context_str = ""  # Will be set if web search was performed
+        context_pack = await context_pack_builder.build_context_pack(
+            system_prompt=system_prompt,
+            chat_id=msg.chat_id,
+            user_id=msg.user_id,
+            query=msg.text,  # Use user message as query for memory retrieval
+            include_user_profile=True,
+            include_web_context=web_context_str,
+            knowledge_context=knowledge_context,
+        )
 
-        # Контекст разговора
-        recent = context.get("recent_messages", [])
-        for m in recent[-10:]:
-            author = m.get("username") or m.get("first_name") or "кто-то"
-            llm_messages.append({
-                "role": "user",
-                "content": f"[{author}]: {m.get('text', '')}",
-            })
+        # Формируем сообщения из context pack
+        llm_messages = context_pack_builder.format_pack_for_llm(context_pack)
 
-        # Текущее сообщение
+        # Текущее сообщение (добавляем в конец)
         author_name = msg.first_name or msg.username or "пользователь"
         llm_messages.append({
             "role": "user",
@@ -486,8 +491,8 @@ class Orchestrator:
 
         return "\n".join(lines)
 
-    async def handle_profile_command(self, user_id: int) -> str:
-        profile = await self.memory_engine.get_user_profile(user_id)
+    async def handle_profile_command(self, user_id: int, chat_id: int) -> str:
+        profile = await self.memory_engine.get_user_profile(user_id, chat_id)
         if not profile:
             return "👤 Профиль ещё не создан. Пообщайся со мной!"
 

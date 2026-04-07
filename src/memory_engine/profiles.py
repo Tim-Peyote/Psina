@@ -1,4 +1,4 @@
-"""User profile management."""
+"""User profile management — per-chat isolated profiles."""
 
 import json
 
@@ -14,18 +14,22 @@ logger = structlog.get_logger()
 
 async def update_profile(
     user_id: int,
+    chat_id: int,
     traits: list[str] | None = None,
     interests: list[str] | None = None,
     summary: str | None = None,
 ) -> UserProfile:
-    """Update or create a user profile."""
+    """Update or create a user profile for a specific chat."""
     async for session in get_session():
-        stmt = select(UserProfile).where(UserProfile.user_id == user_id)
+        stmt = select(UserProfile).where(
+            UserProfile.user_id == user_id,
+            UserProfile.chat_id == chat_id,
+        )
         result = await session.execute(stmt)
         profile = result.scalar_one_or_none()
 
         if profile is None:
-            profile = UserProfile(user_id=user_id)
+            profile = UserProfile(user_id=user_id, chat_id=chat_id)
             session.add(profile)
 
         if traits:
@@ -46,15 +50,18 @@ async def update_profile(
         return profile
 
 
-async def get_or_create_profile(user_id: int) -> UserProfile:
-    """Get or create a user profile."""
+async def get_or_create_profile(user_id: int, chat_id: int) -> UserProfile:
+    """Get or create a user profile for a specific chat."""
     async for session in get_session():
-        stmt = select(UserProfile).where(UserProfile.user_id == user_id)
+        stmt = select(UserProfile).where(
+            UserProfile.user_id == user_id,
+            UserProfile.chat_id == chat_id,
+        )
         result = await session.execute(stmt)
         profile = result.scalar_one_or_none()
 
         if profile is None:
-            profile = UserProfile(user_id=user_id)
+            profile = UserProfile(user_id=user_id, chat_id=chat_id)
             session.add(profile)
             await session.commit()
             await session.refresh(profile)

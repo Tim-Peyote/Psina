@@ -167,14 +167,15 @@ class FactExtractor:
 
         return None
 
-    async def update_profile_from_facts(self, user_id: int) -> None:
-        """Обновить профиль пользователя на основе накопленных фактов."""
+    async def update_profile_from_facts(self, user_id: int, chat_id: int) -> None:
+        """Обновить профиль пользователя в конкретном чате на основе накопленных фактов."""
         async for session in get_session():
-            # Собираем все факты о пользователе
+            # Собираем все факты о пользователе в ЭТОМ чате
             stmt = (
                 select(MemoryItem)
                 .where(
                     MemoryItem.user_id == user_id,
+                    MemoryItem.chat_id == chat_id,
                     MemoryItem.type.in_([MemoryType.FACT, MemoryType.PREFERENCE]),
                 )
                 .order_by(MemoryItem.created_at.desc())
@@ -186,13 +187,16 @@ class FactExtractor:
             if not facts:
                 return
 
-            # Получаем или создаём профиль
-            profile_stmt = select(UserProfile).where(UserProfile.user_id == user_id)
+            # Получаем или создаём профиль для этого чата
+            profile_stmt = select(UserProfile).where(
+                UserProfile.user_id == user_id,
+                UserProfile.chat_id == chat_id,
+            )
             profile_result = await session.execute(profile_stmt)
             profile = profile_result.scalar_one_or_none()
 
             if not profile:
-                profile = UserProfile(user_id=user_id)
+                profile = UserProfile(user_id=user_id, chat_id=chat_id)
                 session.add(profile)
 
             # Группируем факты

@@ -89,21 +89,23 @@ def check_reminders() -> None:
 
 @shared_task(name="src.workers.tasks.update_user_profiles")
 def update_user_profiles() -> None:
-    """Periodically update user profiles from memory."""
+    """Periodically update user profiles from memory (per-chat)."""
 
     async def _run() -> None:
         from src.database.models import UserProfile
         from sqlalchemy import select
 
         async for session in get_session():
-            stmt = select(UserProfile)
+            stmt = select(UserProfile.user_id, UserProfile.chat_id)
             result = await session.execute(stmt)
-            profiles = list(result.scalars().all())
+            profiles = list(result.fetchall())
 
-            for profile in profiles:
+            for user_id, chat_id in profiles:
                 try:
-                    logger.debug("Profile updated", user_id=profile.user_id)
+                    # Profile is already updated per-chat in fact_extractor/relationship_engine
+                    # This task is a no-op placeholder for future batch re-processing
+                    logger.debug("Profile exists", user_id=user_id, chat_id=chat_id)
                 except Exception:
-                    logger.exception("Failed to update profile", user_id=profile.user_id)
+                    logger.exception("Failed to update profile", user_id=user_id, chat_id=chat_id)
 
     asyncio.run(_run())

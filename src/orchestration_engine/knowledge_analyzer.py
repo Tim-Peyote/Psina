@@ -161,9 +161,9 @@ class KnowledgeAnalyzer:
             elif memory.type in (MemoryType.FACT, MemoryType.EVENT):
                 report.facts.append(item)
 
-        # 5. Также берём глобальный профиль пользователя
+        # 5. Также берём профиль пользователя в этом чате
         if msg.user_id and not report.facts:
-            profile = await self.memory_engine.get_user_profile(msg.user_id)
+            profile = await self.memory_engine.get_user_profile(msg.user_id, msg.chat_id)
             if profile and profile.summary:
                 report.facts.append(KnowledgeItem(
                     content=f"Профиль пользователя: {profile.summary}",

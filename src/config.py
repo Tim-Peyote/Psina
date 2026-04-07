@@ -60,6 +60,23 @@ class Settings(BaseSettings):
     max_memory_items: int = 10
     embedding_dimension: int = 768
 
+    # Memory system upgrade
+    memory_extraction_interval: int = 30  # messages between extractions
+    memory_extraction_delay: int = 60  # seconds between extractions
+    max_memory_items_per_user: int = 100
+    max_memory_items_per_chat: int = 500
+    memory_ttl_weak_items: int = 168  # hours (7 days)
+    memory_decay_half_life: int = 72  # hours (3 days)
+    max_context_pack_tokens: int = 4000
+    max_context_recent_messages: int = 20
+    max_context_memory_items: int = 10
+    max_context_summary_tokens: int = 500
+    memory_retrieval_top_k: int = 10
+    compaction_threshold_tokens: int = 3000
+    compaction_messages_per_batch: int = 50
+    compact_after_hours: int = 24
+    embedding_model: str = "text-embedding-3-small"
+
     # Censorship
     default_censorship_level: str = "moderate"
 

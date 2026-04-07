@@ -146,7 +146,8 @@ async def handle_memory(message: Message) -> None:
 async def handle_profile(message: Message) -> None:
     """Команда /profile."""
     user_id = message.from_user.id if message.from_user else 0
-    result = await orchestrator.handle_profile_command(user_id)
+    chat_id = message.chat.id
+    result = await orchestrator.handle_profile_command(user_id, chat_id)
     await _reply(message, result)
 
 

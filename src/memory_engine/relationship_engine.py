@@ -125,13 +125,14 @@ class RelationshipEngine:
                         name=person_name,
                     )
 
-    async def get_user_relationships(self, user_id: int) -> list[dict]:
-        """Получить все связи пользователя."""
+    async def get_user_relationships(self, user_id: int, chat_id: int) -> list[dict]:
+        """Получить все связи пользователя в конкретном чате."""
         async for session in get_session():
             stmt = (
                 select(MemoryItem)
                 .where(
                     MemoryItem.user_id == user_id,
+                    MemoryItem.chat_id == chat_id,
                     MemoryItem.type == MemoryType.RELATIONSHIP,
                 )
                 .order_by(MemoryItem.relevance.desc())
@@ -150,15 +151,18 @@ class RelationshipEngine:
 
             return relationships
 
-    async def update_profile_relationships(self, user_id: int) -> None:
-        """Обновить раздел отношений в профиле пользователя."""
-        relationships = await self.get_user_relationships(user_id)
+    async def update_profile_relationships(self, user_id: int, chat_id: int) -> None:
+        """Обновить раздел отношений в профиле пользователя для конкретного чата."""
+        relationships = await self.get_user_relationships(user_id, chat_id)
 
         if not relationships:
             return
 
         async for session in get_session():
-            stmt = select(UserProfile).where(UserProfile.user_id == user_id)
+            stmt = select(UserProfile).where(
+                UserProfile.user_id == user_id,
+                UserProfile.chat_id == chat_id,
+            )
             result = await session.execute(stmt)
             profile = result.scalar_one_or_none()
 

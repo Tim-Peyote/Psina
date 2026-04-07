@@ -90,10 +90,13 @@ class MemoryEngine:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def get_user_profile(self, user_id: int) -> UserProfile | None:
-        """Получить профиль пользователя."""
+    async def get_user_profile(self, user_id: int, chat_id: int) -> UserProfile | None:
+        """Получить профиль пользователя в конкретном чате."""
         async for session in get_session():
-            stmt = select(UserProfile).where(UserProfile.user_id == user_id)
+            stmt = select(UserProfile).where(
+                UserProfile.user_id == user_id,
+                UserProfile.chat_id == chat_id,
+            )
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 

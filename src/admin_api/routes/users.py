@@ -19,7 +19,8 @@ class UserProfileResponse(BaseModel):
 
 
 @router.get("/{user_id}", response_model=UserProfileResponse)
-async def get_user_profile(user_id: int) -> UserProfileResponse:
+async def get_user_profile(user_id: int, chat_id: int | None = None) -> UserProfileResponse:
+    """Get user profile. If chat_id is provided, returns profile for that specific chat."""
     async for session in get_session():
         user_stmt = select(User).where(User.id == user_id)
         user_result = await session.execute(user_stmt)
@@ -27,7 +28,14 @@ async def get_user_profile(user_id: int) -> UserProfileResponse:
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        profile_stmt = select(UserProfile).where(UserProfile.user_id == user_id)
+        profile_stmt = select(UserProfile)
+        if chat_id:
+            profile_stmt = profile_stmt.where(
+                UserProfile.user_id == user_id,
+                UserProfile.chat_id == chat_id,
+            )
+        else:
+            profile_stmt = profile_stmt.where(UserProfile.user_id == user_id)
         profile_result = await session.execute(profile_stmt)
         profile = profile_result.scalar_one_or_none()
 

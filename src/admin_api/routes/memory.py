@@ -2,8 +2,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from src.database.session import get_session
-from src.database.models import MemoryItem, MemoryType
-from sqlalchemy import select, and_
+from src.database.models import MemoryItem, MemoryType, MemorySummary, MemoryExtractionBatch
+from sqlalchemy import select, and_, func, text
 
 router = APIRouter()
 
@@ -16,7 +16,12 @@ class MemoryItemResponse(BaseModel):
     content: str
     confidence: float
     relevance: float
+    frequency: int
+    access_count: int
+    is_active: bool
     source: str
+    tags: list[str] | None
+    created_at: str | None
 
     class Config:
         from_attributes = True
@@ -75,7 +80,12 @@ async def list_memories(
                     content=item.content,
                     confidence=item.confidence,
                     relevance=item.relevance,
+                    frequency=item.frequency,
+                    access_count=item.access_count,
+                    is_active=item.is_active,
                     source=item.source,
+                    tags=item.tags,
+                    created_at=item.created_at.isoformat() if item.created_at else None,
                 )
                 for item in items
             ],
@@ -117,3 +127,251 @@ async def clear_memories(
         await session.commit()
 
         return {"status": "cleared", "deleted_count": count}
+
+
+# ========== NEW MEMORY SYSTEM ENDPOINTS ==========
+
+
+class MemorySearchRequest(BaseModel):
+    query: str
+    chat_id: int | None = None
+    user_id: int | None = None
+    top_k: int = 10
+
+
+class MemorySearchResult(BaseModel):
+    item_id: int
+    type: str
+    content: str
+    score: float
+    chat_id: int | None = None
+    user_id: int | None = None
+    relevance: float = 0.0
+    frequency: int = 1
+
+
+@router.post("/search", response_model=list[MemorySearchResult])
+async def search_memory(request: MemorySearchRequest) -> list[MemorySearchResult]:
+    """Search memory with hybrid vector + keyword approach."""
+    from src.memory_services.retrieval_service import retrieval_service
+
+    results = await retrieval_service.search(
+        query=request.query,
+        chat_id=request.chat_id,
+        user_id=request.user_id,
+        top_k=request.top_k,
+    )
+
+    return [
+        MemorySearchResult(
+            item_id=r.item_id,
+            type=r.type,
+            content=r.content,
+            score=r.score,
+            chat_id=r.chat_id,
+            user_id=r.user_id,
+            relevance=r.relevance,
+            frequency=r.frequency,
+        )
+        for r in results
+    ]
+
+
+class MemoryStatsResponse(BaseModel):
+    total_items: int
+    active_items: int
+    inactive_items: int
+    items_by_type: dict[str, int]
+    items_by_chat: dict[str, int]
+    avg_relevance: float
+    avg_confidence: float
+
+
+@router.get("/stats", response_model=MemoryStatsResponse)
+async def memory_stats() -> MemoryStatsResponse:
+    """Get memory system statistics."""
+    async for session in get_session():
+        # Total counts
+        total_stmt = select(func.count(MemoryItem.id))
+        result = await session.execute(total_stmt)
+        total = result.scalar() or 0
+
+        active_stmt = select(func.count(MemoryItem.id)).where(MemoryItem.is_active == True)
+        result = await session.execute(active_stmt)
+        active = result.scalar() or 0
+
+        # By type
+        type_stmt = select(MemoryItem.type, func.count(MemoryItem.id)).group_by(MemoryItem.type)
+        result = await session.execute(type_stmt)
+        by_type = {t.value: c for t, c in result.fetchall()}
+
+        # By chat (top 10)
+        chat_stmt = select(MemoryItem.chat_id, func.count(MemoryItem.id)).where(
+            MemoryItem.chat_id.isnot(None)
+        ).group_by(MemoryItem.chat_id).order_by(func.count(MemoryItem.id).desc()).limit(10)
+        result = await session.execute(chat_stmt)
+        by_chat = {str(cid): cnt for cid, cnt in result.fetchall() if cid}
+
+        # Averages
+        avg_stmt = select(
+            func.avg(MemoryItem.relevance),
+            func.avg(MemoryItem.confidence),
+        )
+        result = await session.execute(avg_stmt)
+        row = result.first()
+        avg_relevance = float(row[0]) if row and row[0] else 0.0
+        avg_confidence = float(row[1]) if row and row[1] else 0.0
+
+        return MemoryStatsResponse(
+            total_items=total,
+            active_items=active,
+            inactive_items=total - active,
+            items_by_type=by_type,
+            items_by_chat=by_chat,
+            avg_relevance=avg_relevance,
+            avg_confidence=avg_confidence,
+        )
+
+
+class MemoryLifecycleResult(BaseModel):
+    status: str
+    details: dict
+
+
+@router.post("/lifecycle/decay", response_model=MemoryLifecycleResult)
+async def trigger_decay() -> MemoryLifecycleResult:
+    """Manually trigger relevance decay."""
+    from src.memory_services.memory_lifecycle import memory_lifecycle
+
+    result = await memory_lifecycle.apply_relevance_decay()
+    return MemoryLifecycleResult(status="success", details=result)
+
+
+@router.post("/lifecycle/cleanup", response_model=MemoryLifecycleResult)
+async def trigger_cleanup() -> MemoryLifecycleResult:
+    """Manually trigger expired items cleanup."""
+    from src.memory_services.memory_lifecycle import memory_lifecycle
+
+    result = await memory_lifecycle.cleanup_expired_items()
+    return MemoryLifecycleResult(status="success", details=result)
+
+
+@router.post("/lifecycle/consolidate", response_model=MemoryLifecycleResult)
+async def trigger_consolidation() -> MemoryLifecycleResult:
+    """Manually trigger similar items consolidation."""
+    from src.memory_services.memory_lifecycle import memory_lifecycle
+
+    result = await memory_lifecycle.consolidate_similar_items()
+    return MemoryLifecycleResult(status="success", details=result)
+
+
+@router.post("/lifecycle/full", response_model=MemoryLifecycleResult)
+async def trigger_full_lifecycle() -> MemoryLifecycleResult:
+    """Run full memory lifecycle cleanup."""
+    from src.memory_services.memory_lifecycle import memory_lifecycle
+
+    result = await memory_lifecycle.run_full_cleanup()
+    return MemoryLifecycleResult(status="success", details=result)
+
+
+class MemorySummariesResponse(BaseModel):
+    summaries: list[dict]
+    total: int
+
+
+@router.get("/summaries", response_model=MemorySummariesResponse)
+async def list_summaries(
+    chat_id: int | None = Query(None),
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+) -> MemorySummariesResponse:
+    """List memory summaries."""
+    async for session in get_session():
+        stmt = select(MemorySummary)
+        conditions = []
+        if chat_id is not None:
+            conditions.append(MemorySummary.chat_id == chat_id)
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        # Count
+        count_stmt = select(func.count(MemorySummary.id))
+        if conditions:
+            count_stmt = count_stmt.where(and_(*conditions))
+        result = await session.execute(count_stmt)
+        total = result.scalar() or 0
+
+        stmt = stmt.order_by(MemorySummary.created_at.desc()).offset(offset).limit(limit)
+        result = await session.execute(stmt)
+        summaries = list(result.scalars().all())
+
+        return MemorySummariesResponse(
+            summaries=[
+                {
+                    "id": s.id,
+                    "chat_id": s.chat_id,
+                    "content": s.content[:200] + "..." if len(s.content) > 200 else s.content,
+                    "topics": s.topics or [],
+                    "message_count": s.message_count,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                }
+                for s in summaries
+            ],
+            total=total,
+        )
+
+
+class ExtractionBatchResponse(BaseModel):
+    id: int
+    chat_id: int
+    message_count: int
+    items_extracted: int
+    status: str
+    created_at: str | None
+    processed_at: str | None
+
+
+@router.get("/extraction-batches", response_model=list[ExtractionBatchResponse])
+async def list_extraction_batches(
+    chat_id: int | None = Query(None),
+    status: str | None = Query(None),
+    limit: int = Query(50, le=200),
+) -> list[ExtractionBatchResponse]:
+    """List extraction batches."""
+    async for session in get_session():
+        stmt = select(MemoryExtractionBatch)
+        if chat_id is not None:
+            stmt = stmt.where(MemoryExtractionBatch.chat_id == chat_id)
+        if status is not None:
+            stmt = stmt.where(MemoryExtractionBatch.status == status)
+
+        stmt = stmt.order_by(MemoryExtractionBatch.created_at.desc()).limit(limit)
+        result = await session.execute(stmt)
+        batches = list(result.scalars().all())
+
+        return [
+            ExtractionBatchResponse(
+                id=b.id,
+                chat_id=b.chat_id,
+                message_count=b.message_count,
+                items_extracted=b.items_extracted,
+                status=b.status,
+                created_at=b.created_at.isoformat() if b.created_at else None,
+                processed_at=b.processed_at.isoformat() if b.processed_at else None,
+            )
+            for b in batches
+        ]
+
+
+@router.post("/compact", response_model=dict)
+async def trigger_compaction(chat_id: int | None = Query(None)) -> dict:
+    """Manually trigger memory compaction."""
+    from src.memory_services.compaction_service import compaction_service
+
+    if chat_id:
+        results = await compaction_service.compact_chat(chat_id)
+        return {"status": "success", "chat_id": chat_id, "results": len(results)}
+    else:
+        results = await compaction_service.compact_all_chats()
+        return {"status": "success", "chats_compacted": len(results)}

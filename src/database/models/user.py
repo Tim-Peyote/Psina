@@ -1,8 +1,9 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Enum, Float, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, Float, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import ARRAY, VECTOR
 
 
 class Base(DeclarativeBase):
@@ -84,8 +85,16 @@ class MemoryItem(Base):
     type: Mapped[MemoryType] = mapped_column(Enum(MemoryType), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[bytes | None] = mapped_column(nullable=True)
+    embedding_vector: Mapped[list[float] | None] = mapped_column(VECTOR(768), nullable=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
     relevance: Mapped[float] = mapped_column(Float, default=1.0)
+    frequency: Mapped[int] = mapped_column(Integer, default=1)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    access_count: Mapped[int] = mapped_column(Integer, default=0)
+    ttl_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    consolidated_from_ids: Mapped[list[int] | None] = mapped_column(ARRAY(Integer), nullable=True)
+    tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     source: Mapped[str] = mapped_column(String(64), default="chat")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -94,10 +103,13 @@ class MemoryItem(Base):
 
 
 class UserProfile(Base):
+    """Profile per user PER CHAT — изолирован для каждого чата."""
+
     __tablename__ = "user_profiles"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     traits: Mapped[str | None] = mapped_column(Text, nullable=True)
     interests: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -158,3 +170,39 @@ class GameEvent(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MemorySummary(Base):
+    """Compacted summary of old conversation sessions."""
+
+    __tablename__ = "memory_summaries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    topics: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    start_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    end_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    start_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    end_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    embedding_vector: Mapped[list[float] | None] = mapped_column(VECTOR(768), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MemoryExtractionBatch(Base):
+    """Tracks processed extraction batches for memory pipeline."""
+
+    __tablename__ = "memory_extraction_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    start_message_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_message_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    items_extracted: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="pending")  # pending/processing/completed/failed
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

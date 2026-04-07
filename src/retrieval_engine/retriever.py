@@ -31,7 +31,7 @@ class Retriever:
             messages.append({"role": "user", "content": m.text})
 
         # 3. Профиль пользователя
-        profile = await self._get_user_profile(msg.user_id)
+        profile = await self._get_user_profile(msg.user_id, msg.chat_id)
         if profile:
             profile_ctx = f"Профиль пользователя: {profile.summary or 'нет данных'}"
             if profile.interests:
@@ -77,9 +77,12 @@ class Retriever:
             result = await session.execute(stmt)
             return list(reversed(result.scalars().all()))
 
-    async def _get_user_profile(self, user_id: int) -> UserProfile | None:
+    async def _get_user_profile(self, user_id: int, chat_id: int) -> UserProfile | None:
         async for session in get_session():
-            stmt = select(UserProfile).where(UserProfile.user_id == user_id)
+            stmt = select(UserProfile).where(
+                UserProfile.user_id == user_id,
+                UserProfile.chat_id == chat_id,
+            )
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 
