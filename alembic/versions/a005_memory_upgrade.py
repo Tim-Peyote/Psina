@@ -10,6 +10,7 @@ Adds memory lifecycle fields, memory summaries table, and extraction batch track
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+from pgvector.sqlalchemy import Vector
 
 # revision identifiers, used by Alembic.
 revision = "a005_memory_upgrade"
@@ -62,7 +63,7 @@ def upgrade() -> None:
         sa.Column("start_time", sa.DateTime(timezone=True), nullable=True),
         sa.Column("end_time", sa.DateTime(timezone=True), nullable=True),
         sa.Column("message_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("embedding_vector", postgresql.VECTOR(768), nullable=True),
+        sa.Column("embedding_vector", Vector(768), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.PrimaryKeyConstraint("id"),
     )

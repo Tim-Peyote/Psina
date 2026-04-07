@@ -74,13 +74,6 @@ def upgrade() -> None:
         sa.Column("embedding_vector", Vector(768), nullable=True),
         sa.Column("confidence", sa.Float(), server_default=sa.text("0.5")),
         sa.Column("relevance", sa.Float(), server_default=sa.text("1.0")),
-        sa.Column("frequency", sa.Integer(), server_default=sa.text("1")),
-        sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("access_count", sa.Integer(), server_default=sa.text("0")),
-        sa.Column("ttl_seconds", sa.Integer(), nullable=True),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("true")),
-        sa.Column("consolidated_from_ids", postgresql.ARRAY(sa.Integer()), nullable=True),
-        sa.Column("tags", postgresql.ARRAY(sa.Text()), nullable=True),
         sa.Column("source", sa.String(64), server_default=sa.text("'chat'")),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
@@ -115,36 +108,6 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
     op.create_index("ix_summaries_chat_date", "summaries", ["chat_id", "date"])
-
-    op.create_table(
-        "memory_summaries",
-        sa.Column("id", sa.Integer(), sa.Identity(), primary_key=True),
-        sa.Column("chat_id", sa.BigInteger(), nullable=False),
-        sa.Column("user_id", sa.BigInteger(), nullable=True),
-        sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("topics", postgresql.ARRAY(sa.Text()), nullable=True),
-        sa.Column("start_message_id", sa.Integer(), nullable=True),
-        sa.Column("end_message_id", sa.Integer(), nullable=True),
-        sa.Column("start_time", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("end_time", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("message_count", sa.Integer(), server_default=sa.text("0")),
-        sa.Column("embedding_vector", Vector(768), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-    )
-
-    op.create_table(
-        "memory_extraction_batches",
-        sa.Column("id", sa.Integer(), sa.Identity(), primary_key=True),
-        sa.Column("chat_id", sa.BigInteger(), nullable=False),
-        sa.Column("start_message_id", sa.Integer(), nullable=False),
-        sa.Column("end_message_id", sa.Integer(), nullable=False),
-        sa.Column("message_count", sa.Integer(), nullable=False),
-        sa.Column("items_extracted", sa.Integer(), server_default=sa.text("0")),
-        sa.Column("status", sa.String(32), server_default=sa.text("'pending'")),
-        sa.Column("error_message", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
-    )
 
     op.create_table(
         "usage_stats",
@@ -231,8 +194,6 @@ def downgrade() -> None:
     op.drop_table("game_events")
     op.drop_table("game_sessions")
     op.drop_table("usage_stats")
-    op.drop_table("memory_extraction_batches")
-    op.drop_table("memory_summaries")
     op.drop_table("summaries")
     op.drop_table("user_profiles")
     op.drop_table("memory_items")
