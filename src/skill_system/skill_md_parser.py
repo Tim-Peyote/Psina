@@ -88,10 +88,13 @@ def _parse_frontmatter(content: str) -> dict:
                 nv = nested_match.group(2).strip().strip("\"'")
                 # Check if it's a list key (requires, optional, etc.)
                 if not nv:
-                    result[current_key][nk] = []
-                    current_dict[current_key + "." + nk] = result[current_key][nk]
+                    # Guard: current_key value must be a dict, not a list
+                    if isinstance(result.get(current_key), dict):
+                        result[current_key][nk] = []
+                        current_dict[current_key + "." + nk] = result[current_key][nk]
                 else:
-                    result[current_key][nk] = nv
+                    if isinstance(result.get(current_key), dict):
+                        result[current_key][nk] = nv
                 continue
 
     return result
