@@ -1,34 +1,119 @@
-"""Skill registry — manages installed skills."""
+"""Skill registry — manages installed skills.
+
+Supports two loading modes:
+1. File-based (SKILL.md): lazy discovery → activation
+2. DB-based (legacy): full registration at startup
+"""
 
 from __future__ import annotations
 
 import importlib
+from pathlib import Path
+
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.session import get_session
 from src.database.models import Skill
+from src.skill_system.skill_md_parser import discover_skill, activate_skill, SkillMetadata
 
 logger = structlog.get_logger()
+
+SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
 
 class SkillRegistry:
     """Register, install, and manage skills."""
 
     def __init__(self) -> None:
-        self._skills: dict[str, Skill] = {}
+        # Discovery: name + description only (~50-100 tokens per skill)
+        self._discovered: dict[str, SkillMetadata] = {}
+        # Activation: full content loaded on demand
+        self._activated: dict[str, SkillMetadata] = {}
+        # DB-backed skills (legacy)
+        self._db_skills: dict[str, Skill] = {}
         self._loaded_handlers: dict[str, object] = {}
 
-    async def load_skills(self) -> None:
-        """Load all active skills from database."""
+    async def discover_skills(self) -> None:
+        """Phase 1: Discovery — read only name+description from all SKILL.md files.
+
+        This is cheap: ~50-100 tokens per skill.
+        """
+        if not SKILLS_DIR.exists():
+            return
+
+        for skill_dir in SKILLS_DIR.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            if skill_dir.name.startswith("_") or skill_dir.name.startswith("."):
+                continue
+
+            meta = discover_skill(skill_dir)
+            if meta:
+                self._discovered[meta.slug] = meta
+                logger.debug("Skill discovered", slug=meta.slug, name=meta.name)
+
+        logger.info("Skills discovered", count=len(self._discovered))
+
+    async def activate_skill_by_slug(self, slug: str) -> SkillMetadata | None:
+        """Phase 2: Activation — load full SKILL.md for a specific skill.
+
+        This reads ~5000 tokens. Only called when skill is matched.
+        """
+        if slug in self._activated:
+            return self._activated[slug]
+
+        skill_path = SKILLS_DIR / slug.replace("-", "_")
+        if not skill_path.exists():
+            skill_path = SKILLS_DIR / slug
+        if not skill_path.exists():
+            return None
+
+        meta = activate_skill(skill_path)
+        if meta:
+            self._activated[slug] = meta
+            logger.info("Skill activated", slug=slug, tokens=len(meta.full_content))
+
+        return meta
+
+    def get_discovered(self) -> dict[str, SkillMetadata]:
+        """Return all discovered skills (name + description only)."""
+        return dict(self._discovered)
+
+    def get_activated(self, slug: str) -> SkillMetadata | None:
+        """Return activated skill with full content."""
+        return self._activated.get(slug)
+
+    def get_skill_description(self, slug: str) -> str:
+        """Get description for LLM classification (cheap, no file read)."""
+        if slug in self._discovered:
+            return self._discovered[slug].description
+        if slug in self._db_skills:
+            return self._db_skills[slug].description
+        return ""
+
+    def get_all_descriptions(self) -> dict[str, str]:
+        """Get all descriptions for LLM classification.
+
+        Only name + description, not full content.
+        """
+        result = {}
+        for slug, meta in self._discovered.items():
+            result[slug] = meta.description
+        for slug, skill in self._db_skills.items():
+            result[slug] = skill.description
+        return result
+
+    async def load_db_skills(self) -> None:
+        """Load DB-registered skills (legacy mode)."""
         async for session in get_session():
             stmt = select(Skill).where(Skill.is_active == True)
             result = await session.execute(stmt)
             skills = list(result.scalars().all())
 
-        self._skills = {s.slug: s for s in skills}
-        logger.info("Skills loaded", count=len(self._skills))
+        self._db_skills = {s.slug: s for s in skills}
+        logger.info("DB skills loaded", count=len(self._db_skills))
 
     async def register_skill(
         self,
@@ -40,7 +125,7 @@ class SkillRegistry:
         version: str = "1.0.0",
         config: dict | None = None,
     ) -> Skill:
-        """Register a new skill in the database."""
+        """Register a new skill in the database (legacy)."""
         async for session in get_session():
             skill = Skill(
                 slug=slug,
@@ -56,7 +141,7 @@ class SkillRegistry:
             await session.commit()
             await session.refresh(skill)
 
-        self._skills[slug] = skill
+        self._db_skills[slug] = skill
         logger.info("Skill registered", slug=slug, name=name)
         return skill
 
@@ -73,7 +158,7 @@ class SkillRegistry:
             await session.delete(skill)
             await session.commit()
 
-        self._skills.pop(slug, None)
+        self._db_skills.pop(slug, None)
         self._loaded_handlers.pop(slug, None)
         logger.info("Skill unregistered", slug=slug)
         return True
@@ -92,15 +177,15 @@ class SkillRegistry:
             await session.commit()
 
         if skill:
-            self._skills[slug] = skill
+            self._db_skills[slug] = skill
         return True
 
-    def get_skill(self, slug: str) -> Skill | None:
+    def get_skill(self, slug: str) -> Skill | SkillMetadata | None:
         """Get a skill by slug."""
-        return self._skills.get(slug)
+        return self._db_skills.get(slug) or self._discovered.get(slug)
 
     async def get_all_skills(self, include_inactive: bool = False) -> list[Skill]:
-        """Get all skills."""
+        """Get all DB skills."""
         async for session in get_session():
             stmt = select(Skill).order_by(Skill.name)
             if not include_inactive:
@@ -115,12 +200,13 @@ class SkillRegistry:
 
         Handlers are expected at: src.skills.{slug}.handler
         """
-        if slug in self._loaded_handlers:
-            return self._loaded_handlers[slug]
+        slug_underscored = slug.replace("-", "_")
+        if slug_underscored in self._loaded_handlers:
+            return self._loaded_handlers[slug_underscored]
 
         try:
-            module = importlib.import_module(f"src.skills.{slug}.handler")
-            self._loaded_handlers[slug] = module
+            module = importlib.import_module(f"src.skills.{slug_underscored}.handler")
+            self._loaded_handlers[slug_underscored] = module
             return module
         except ImportError:
             logger.debug("No handler module for skill", slug=slug)
@@ -139,8 +225,8 @@ class SkillRegistry:
             skill.config = config
             await session.commit()
 
-        if slug in self._skills:
-            self._skills[slug].config = config
+        if slug in self._db_skills:
+            self._db_skills[slug].config = config
         return True
 
 

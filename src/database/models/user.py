@@ -3,7 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Enum, Float, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import ARRAY, VECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, VECTOR
 
 
 class Base(DeclarativeBase):
@@ -219,7 +219,7 @@ class Skill(Base):
     version: Mapped[str] = mapped_column(String(32), default="1.0.0")
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     triggers: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
-    config: Mapped[dict | None] = mapped_column(nullable=True)
+    config: Mapped[dict | None] = mapped_column(JSONB(), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -251,5 +251,5 @@ class SkillEvent(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    metadata: Mapped[dict | None] = mapped_column(nullable=True)
+    metadata: Mapped[dict | None] = mapped_column(JSONB(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

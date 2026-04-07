@@ -154,8 +154,6 @@ class ContextPackBuilder:
 
             return summary.content if summary else ""
 
-        return ""
-
     async def _get_user_profile_summary(self, user_id: int, chat_id: int) -> str:
         """Get user profile as a summary string for a specific chat."""
         async for session in get_session():

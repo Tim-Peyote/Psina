@@ -125,14 +125,23 @@ class SkillRouter:
     async def _llm_classify(
         self,
         text: str,
-        skills: list[Skill],
+        skills: list,  # Can be Skill or SkillMetadata
     ) -> SkillDecision:
-        """Use LLM to classify message into a skill."""
+        """Use LLM to classify message into a skill.
+
+        Uses only descriptions (~50-100 tokens each), not full content.
+        This is the Discovery-phase classification.
+        """
         if not skills:
             return SkillDecision.no_skill()
 
+        # Build description list from registry (cheap)
+        all_desc = skill_registry.get_all_descriptions()
+        if not all_desc:
+            return SkillDecision.no_skill()
+
         skill_descriptions = "\n".join(
-            f"- {s.slug}: {s.description}" for s in skills
+            f"- {slug}: {desc}" for slug, desc in all_desc.items()
         )
 
         prompt = f"""Определи, подходит ли сообщение пользователя к одному из этих скиллов.
@@ -154,12 +163,12 @@ class SkillRouter:
             response = await self.llm_provider.generate_response(messages=messages)
             response_slug = response.strip().lower().replace("none", "")
 
-            for skill in skills:
-                if skill.slug.lower() == response_slug:
+            for slug in all_desc:
+                if slug.lower() == response_slug:
                     return SkillDecision.yes(
-                        skill_slug=skill.slug,
+                        skill_slug=slug,
                         confidence=0.5,  # LLM classification is uncertain
-                        reason=f"LLM classified as {skill.slug}",
+                        reason=f"LLM classified as {slug}",
                     )
         except Exception:
             logger.exception("LLM skill classification failed")

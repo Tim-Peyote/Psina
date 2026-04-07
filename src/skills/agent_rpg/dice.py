@@ -94,16 +94,12 @@ def roll(
     if advantage or disadvantage:
         rolls2 = do_rolls()
         total2 = sum(rolls2) + modifier
-        print(f"Roll 1: {rolls1} + {modifier} = {total1}")
-        print(f"Roll 2: {rolls2} + {modifier} = {total2}")
         if advantage:
             final_total = max(total1, total2)
             rolls = rolls1 if total1 >= total2 else rolls2
-            print(f"Advantage! Taking the highest: {final_total}")
         else:
             final_total = min(total1, total2)
             rolls = rolls1 if total1 <= total2 else rolls2
-            print(f"Disadvantage! Taking the lowest: {final_total}")
         total = final_total
     else:
         rolls = rolls1

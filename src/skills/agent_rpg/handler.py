@@ -1,16 +1,7 @@
-"""RPG Skill handler — main entry point for the RPG Game Master skill.
+"""RPG Skill handler — thin wrapper around SKILL.md.
 
-Combines:
-- Session Zero protocol (5-step campaign initialization)
-- Game Loop (state retrieval → dice → narrative → state management)
-- Narrative mechanics (Yes-but, Loaded Question, Escalation Clock, Consequential Wounds)
-- D20/PbtA/D100/Freeform support
-- Character sheets, inventory, NPCs, journal, combat
-- Skill state isolation per chat
-
-Adapted from:
-- openclaw/skills/agent-rpg (context.py, dice.py, SKILL.md)
-- game_engine (GameManager, GameState, Character, WorldState)
+Loads full SKILL.md instructions on activation, delegates to LLM,
+and saves state. All game rules live in SKILL.md, not in code.
 """
 
 from __future__ import annotations
@@ -19,11 +10,33 @@ import structlog
 
 from src.message_processor.processor import NormalizedMessage
 from src.skill_system.state_manager import skill_state_manager
-from src.skills.agent_rpg.system_prompt import SYSTEM_PROMPT, DEFAULT_CAMPAIGN_STATE
+from src.skill_system.registry import skill_registry
 from src.skills.agent_rpg.dice import roll as dice_roll
 from src.llm_adapter.base import LLMProvider
 
 logger = structlog.get_logger()
+
+DEFAULT_CAMPAIGN_STATE = {
+    "phase": "session_zero",
+    "step": 0,
+    "system": "",
+    "world": {
+        "location": "Начальная локация",
+        "time": "08:00",
+        "weather": "Ясно",
+        "setting": "",
+        "tone": "",
+        "hook": "",
+        "factions": [],
+        "flags": {},
+        "clocks": {},
+    },
+    "characters": {},
+    "npcs": {},
+    "combat": None,
+    "journal": [],
+    "loot_table": [],
+}
 
 
 async def process_message(
@@ -33,8 +46,16 @@ async def process_message(
 ) -> str | None:
     """Process a message through the RPG skill.
 
-    Main entry point called by orchestrator when agent_rpg is active.
+    Phase 2: Activate SKILL.md if not already loaded.
+    Phase 3: Execute using full instructions.
     """
+    # Activate: load full SKILL.md (~5000 tokens) only once
+    skill = await skill_registry.activate_skill_by_slug("agent-rpg")
+    if not skill:
+        return "⚠️ Скилл не найден."
+
+    system_prompt = skill.full_content
+
     state = await skill_state_manager.get_state(
         "agent_rpg", chat_id, default=dict(DEFAULT_CAMPAIGN_STATE)
     )
@@ -42,9 +63,9 @@ async def process_message(
     phase = state.get("phase", "session_zero")
 
     if phase == "session_zero":
-        response = await _handle_session_zero(msg, state, chat_id, user_id)
+        response = await _handle_session_zero(msg, state, chat_id, user_id, system_prompt)
     elif phase == "playing":
-        response = await _handle_playing(msg, state, chat_id, user_id)
+        response = await _handle_playing(msg, state, chat_id, user_id, system_prompt)
     elif phase == "paused":
         response = _handle_paused(msg)
     elif phase == "ended":
@@ -68,6 +89,7 @@ async def _handle_session_zero(
     state: dict,
     chat_id: int,
     user_id: int,
+    system_prompt: str,
 ) -> str:
     """Handle Session Zero — conversational step-by-step setup.
 
@@ -220,6 +242,7 @@ async def _handle_playing(
     state: dict,
     chat_id: int,
     user_id: int,
+    system_prompt: str,
 ) -> str:
     """Handle normal gameplay with full game loop.
 
@@ -390,10 +413,10 @@ async def _handle_playing(
     # 1. State Retrieval — build context for LLM
     context_lines = _build_game_context(state, user_id)
 
-    # 2. LLM Generation with narrative mechanics
+    # 2. LLM Generation with full SKILL.md instructions
     llm = LLMProvider.get_provider()
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "system", "content": "\n".join(context_lines)},
     ]
 

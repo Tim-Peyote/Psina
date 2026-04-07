@@ -9,7 +9,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, or_
 
 from src.database.session import get_session
 from src.database.models import Reminder
@@ -88,7 +88,10 @@ class ReminderManager:
                 .where(
                     Reminder.chat_id == chat_id,
                     Reminder.is_sent == False,
-                    Reminder.user_id == user_id | (Reminder.target_user_id == user_id),
+                    or_(
+                        Reminder.user_id == user_id,
+                        Reminder.target_user_id == user_id,
+                    ),
                 )
                 .order_by(Reminder.remind_at)
             )

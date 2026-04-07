@@ -647,7 +647,7 @@ class Orchestrator:
                 "• «напомни в пятницу что сдать отчёт»"
             )
 
-        remind_at, content = parsed
+        remind_at, content, target_user_id = parsed
         reminder = await reminder_manager.create_reminder(
             chat_id=chat_id,
             user_id=user_id,

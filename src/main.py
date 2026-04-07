@@ -37,12 +37,9 @@ async def middleware_update_user_chat(handler, event, data):
 async def main() -> None:
     logger.info("Starting Zalutka bot")
 
-    # Register skills
+    # Discover skills from SKILL.md files (lazy: only name + description)
     from src.skill_system.registry import skill_registry
-    await skill_registry.load_skills()
-
-    from src.skills.agent_rpg.register import register_rpg_skill
-    await register_rpg_skill()
+    await skill_registry.discover_skills()
 
     bot_manager = BotManager()
     gateway = GatewayRouter()

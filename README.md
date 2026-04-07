@@ -152,19 +152,33 @@
 
 ### Как добавить новый скилл
 
-1. Создай папку: `src/skills/{имя_скилла}/`
-2. Внутри:
-   - `__init__.py` — модуль
-   - `system_prompt.py` — имя, описание, триггеры, системный промпт
-   - `handler.py` — `async def process_message(msg, chat_id, user_id) -> str`
-   - `register.py` — регистрация в реестре
-   - Дополнительные файлы (dice.py, и т.д.)
-3. Зарегистрируй в `main.py`
+Скиллы следуют стандарту **SKILL.md** — это markdown-файл с YAML frontmatter, который описывает имя, описание и инструкции.
 
-Скилл автоматически:
-- Активируется по триггерам, командам или LLM-классификации
-- Хранит состояние изолированно для каждого чата
-- Может использовать LLM, память, БД — всё доступно
+**Структура:**
+```
+src/skills/{имя_скилла}/
+├── SKILL.md          # name, description, instructions (ОСНОВНОЙ ФАЙЛ)
+├── handler.py        # Тонкий wrapper: load SKILL.md → LLM → save state
+└── dice.py           # Доп. утилиты (опционально)
+```
+
+**SKILL.md** содержит:
+```yaml
+---
+name: my-skill
+description: Краткое описание (до 1024 символов) — по нему бот понимает когда использовать скилл
+license: MIT
+---
+# Instructions
+Подробные правила поведения скилла...
+```
+
+**Как это работает (Progressive Disclosure):**
+1. **Discovery** — при старте читается только `name` + `description` всех скиллов (~50-100 токенов каждый)
+2. **Activation** — когда задача совпадает с `description`, загружается полный SKILL.md (~5000 токенов)
+3. **Execution** — handler получает полный текст инструкций и передаёт LLM
+
+**Главный принцип:** LLM не хранит знания внутри себя — она получает их из подключаемых источников по мере необходимости.
 
 ### Что уже готово для расширения
 
@@ -219,16 +233,17 @@ src/
 │   └── context_pack.py      # Сборка ограниченного контекста для LLM
 │
 ├── skill_system/            # Модульная система скиллов
-│   ├── registry.py          # Реестр: install/uninstall/toggle
+│   ├── registry.py          # Реестр: discovery → activation → execution
 │   ├── router.py            # Роутер: команда → сессия → триггер → LLM
-│   └── state_manager.py     # CRUD состояния на (skill, chat)
+│   ├── state_manager.py     # CRUD состояния на (skill, chat)
+│   └── skill_md_parser.py   # Парсер SKILL.md (lazy loading)
 │
 ├── skills/                  # Установленные скиллы
 │   └── agent_rpg/           # RPG Game Master
-│       ├── handler.py       # Обработка сообщений
+│       ├── SKILL.md         # name, description, инструкции (по стандарту)
+│       ├── handler.py       # Тонкий wrapper: load SKILL.md → LLM → save state
 │       ├── dice.py          # Броски костей (D20, PbtA, adv/dis)
-│       ├── system_prompt.py # SKILL.md (промпт, триггеры, конфиг)
-│       └── register.py      # Авторегистрация
+│       └── register.py      # No-op (auto-discovery)
 │
 ├── orchestration_engine/    # Мозг: маршрутизация, триггеры, сессии, скиллы
 │   ├── orchestrator.py      # Центральный пайплайн
