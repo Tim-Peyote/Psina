@@ -148,49 +148,8 @@ def upgrade() -> None:
     )
     op.create_index("ix_game_events_session_id", "game_events", ["session_id"])
 
-    op.create_table(
-        "skills",
-        sa.Column("slug", sa.String(64), primary_key=True),
-        sa.Column("name", sa.String(128), nullable=False),
-        sa.Column("description", sa.Text(), nullable=False),
-        sa.Column("version", sa.String(32), server_default=sa.text("'1.0.0'")),
-        sa.Column("system_prompt", sa.Text(), nullable=True),
-        sa.Column("triggers", postgresql.ARRAY(sa.Text()), nullable=True),
-        sa.Column("config", postgresql.JSONB(), nullable=True),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("true")),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
-    )
-
-    op.create_table(
-        "skill_state",
-        sa.Column("id", sa.Integer(), sa.Identity(), primary_key=True),
-        sa.Column("skill_slug", sa.String(64), nullable=False),
-        sa.Column("chat_id", sa.BigInteger(), nullable=False),
-        sa.Column("state_json", postgresql.JSONB(), nullable=False, server_default=sa.text("'{}'")),
-        sa.Column("is_active", sa.Boolean(), server_default=sa.text("true")),
-        sa.Column("last_activity_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-    )
-    op.create_index("ix_skill_state_slug_chat", "skill_state", ["skill_slug", "chat_id"])
-
-    op.create_table(
-        "skill_events",
-        sa.Column("id", sa.Integer(), sa.Identity(), primary_key=True),
-        sa.Column("skill_slug", sa.String(64), nullable=False),
-        sa.Column("chat_id", sa.BigInteger(), nullable=False),
-        sa.Column("event_type", sa.String(64), nullable=False),
-        sa.Column("content", sa.Text(), nullable=True),
-        sa.Column("metadata", postgresql.JSONB(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-    )
-    op.create_index("ix_skill_events_slug", "skill_events", ["skill_slug"])
-
 
 def downgrade() -> None:
-    op.drop_table("skill_events")
-    op.drop_table("skill_state")
-    op.drop_table("skills")
     op.drop_table("game_events")
     op.drop_table("game_sessions")
     op.drop_table("usage_stats")

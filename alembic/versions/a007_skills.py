@@ -19,61 +19,74 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 1. Skills registry — what skills are installed
-    op.create_table(
-        "skills",
-        sa.Column("slug", sa.String(64), nullable=False, primary_key=True),
-        sa.Column("name", sa.String(128), nullable=False),
-        sa.Column("description", sa.Text(), nullable=False),
-        sa.Column("version", sa.String(32), nullable=False, server_default="1.0.0"),
-        sa.Column("system_prompt", sa.Text(), nullable=True),
-        sa.Column("triggers", postgresql.ARRAY(sa.Text()), nullable=True),
-        sa.Column("config", postgresql.JSONB(), nullable=True),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
-    )
+    conn = op.get_bind()
 
-    # 2. Per-chat skill state — isolated state per chat per skill
-    op.create_table(
-        "skill_state",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("skill_slug", sa.String(64), nullable=False),
-        sa.Column("chat_id", sa.BigInteger(), nullable=False),
-        sa.Column("state_json", postgresql.JSONB(), nullable=False, server_default="{}"),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
-        sa.Column("last_activity_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.ForeignKeyConstraint(["skill_slug"], ["skills.slug"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_unique_constraint(
-        "uq_skill_state_skill_chat",
-        "skill_state",
-        ["skill_slug", "chat_id"],
-    )
-    op.create_index("ix_skill_state_chat", "skill_state", ["chat_id"])
-    op.create_index("ix_skill_state_skill", "skill_state", ["skill_slug"])
-    op.create_index(
-        "ix_skill_state_chat_active",
-        "skill_state",
-        ["chat_id", "is_active"],
-    )
+    def table_exists(table):
+        return conn.execute(
+            sa.text(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+                f"WHERE table_name='{table}')"
+            )
+        ).scalar()
 
-    # 3. Skill event log — audit trail for skill actions
-    op.create_table(
-        "skill_events",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("skill_slug", sa.String(64), nullable=False),
-        sa.Column("chat_id", sa.BigInteger(), nullable=False),
-        sa.Column("event_type", sa.String(64), nullable=False),
-        sa.Column("content", sa.Text(), nullable=True),
-        sa.Column("metadata", postgresql.JSONB(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.PrimaryKeyConstraint("id"),
-    )
-    op.create_index("ix_skill_events_chat", "skill_events", ["chat_id"])
-    op.create_index("ix_skill_events_skill", "skill_events", ["skill_slug"])
+    # 1. Skills registry
+    if not table_exists("skills"):
+        op.create_table(
+            "skills",
+            sa.Column("slug", sa.String(64), nullable=False, primary_key=True),
+            sa.Column("name", sa.String(128), nullable=False),
+            sa.Column("description", sa.Text(), nullable=False),
+            sa.Column("version", sa.String(32), nullable=False, server_default="1.0.0"),
+            sa.Column("system_prompt", sa.Text(), nullable=True),
+            sa.Column("triggers", postgresql.ARRAY(sa.Text()), nullable=True),
+            sa.Column("config", postgresql.JSONB(), nullable=True),
+            sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
+            sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+            sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now()),
+        )
+
+    # 2. Per-chat skill state
+    if not table_exists("skill_state"):
+        op.create_table(
+            "skill_state",
+            sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("skill_slug", sa.String(64), nullable=False),
+            sa.Column("chat_id", sa.BigInteger(), nullable=False),
+            sa.Column("state_json", postgresql.JSONB(), nullable=False, server_default="{}"),
+            sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
+            sa.Column("last_activity_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+            sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+            sa.ForeignKeyConstraint(["skill_slug"], ["skills.slug"], ondelete="CASCADE"),
+            sa.PrimaryKeyConstraint("id"),
+        )
+        op.create_unique_constraint(
+            "uq_skill_state_skill_chat",
+            "skill_state",
+            ["skill_slug", "chat_id"],
+        )
+        op.create_index("ix_skill_state_chat", "skill_state", ["chat_id"])
+        op.create_index("ix_skill_state_skill", "skill_state", ["skill_slug"])
+        op.create_index(
+            "ix_skill_state_chat_active",
+            "skill_state",
+            ["chat_id", "is_active"],
+        )
+
+    # 3. Skill event log
+    if not table_exists("skill_events"):
+        op.create_table(
+            "skill_events",
+            sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("skill_slug", sa.String(64), nullable=False),
+            sa.Column("chat_id", sa.BigInteger(), nullable=False),
+            sa.Column("event_type", sa.String(64), nullable=False),
+            sa.Column("content", sa.Text(), nullable=True),
+            sa.Column("metadata", postgresql.JSONB(), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+            sa.PrimaryKeyConstraint("id"),
+        )
+        op.create_index("ix_skill_events_chat", "skill_events", ["chat_id"])
+        op.create_index("ix_skill_events_skill", "skill_events", ["skill_slug"])
 
 
 def downgrade() -> None:
