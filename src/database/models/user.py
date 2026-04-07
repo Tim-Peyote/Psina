@@ -3,7 +3,8 @@ from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Enum, Float, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, VECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from pgvector.sqlalchemy import Vector
 
 
 class Base(DeclarativeBase):
@@ -85,7 +86,7 @@ class MemoryItem(Base):
     type: Mapped[MemoryType] = mapped_column(Enum(MemoryType), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[bytes | None] = mapped_column(nullable=True)
-    embedding_vector: Mapped[list[float] | None] = mapped_column(VECTOR(768), nullable=True)
+    embedding_vector: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
     relevance: Mapped[float] = mapped_column(Float, default=1.0)
     frequency: Mapped[int] = mapped_column(Integer, default=1)
@@ -187,7 +188,7 @@ class MemorySummary(Base):
     start_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     end_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     message_count: Mapped[int] = mapped_column(Integer, default=0)
-    embedding_vector: Mapped[list[float] | None] = mapped_column(VECTOR(768), nullable=True)
+    embedding_vector: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
