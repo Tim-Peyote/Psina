@@ -71,7 +71,7 @@ cp .env.example .env
 # Заполни TELEGRAM_BOT_TOKEN и LLM_API_KEY
 
 # 3. Запуск
-docker compose up -d
+docker compose up -d --build
 
 # 4. Миграции
 docker compose exec bot alembic upgrade head
@@ -171,11 +171,14 @@ cp .env.example .env
 nano .env  # заполни токены
 
 # Запуск
-docker compose up -d
+docker compose up -d --build
 docker compose exec bot alembic upgrade head
 
 # Логи
 docker compose logs -f bot
+
+# Админка доступна только локально на сервере
+curl http://127.0.0.1:8000/docs
 ```
 
 ### Обновление
@@ -185,6 +188,13 @@ git pull
 docker compose up -d --build
 docker compose exec bot alembic upgrade head
 ```
+
+### Безопасность
+
+- `db` и `redis` не опубликованы наружу и доступны только контейнерам внутри `docker compose`
+- `admin_api` привязана к `127.0.0.1:8000`, поэтому снаружи сервер ее не отдаёт напрямую
+- Для внешнего доступа к админке подними reverse proxy (`nginx` или `caddy`) с HTTPS и Basic Auth или отдельной авторизацией
+- В продакшене обязательно замени `ADMIN_API_SECRET` на длинное случайное значение
 
 ---
 
