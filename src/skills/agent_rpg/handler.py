@@ -60,6 +60,17 @@ async def process_message(
         "agent_rpg", chat_id, default=dict(DEFAULT_CAMPAIGN_STATE)
     )
 
+    # Validate state structure — DB can return None for any field
+    if not isinstance(state, dict):
+        state = dict(DEFAULT_CAMPAIGN_STATE)
+    state.setdefault("phase", "session_zero")
+    state.setdefault("step", 0)
+    if state["step"] is None:
+        state["step"] = 0
+    state.setdefault("world", dict(DEFAULT_CAMPAIGN_STATE["world"]))
+    state.setdefault("characters", {})
+    state.setdefault("journal", [])
+
     phase = state.get("phase", "session_zero")
 
     # If phase is "ended" due to deactivate_skill, skip RPG entirely
@@ -107,7 +118,7 @@ async def _handle_session_zero(
     4. System & Mechanics (d20/pbta/d100/freeform)
     5. Boundaries & Tone (lines & veils)
     """
-    step = state.get("step", 0)
+    step = state.get("step", 0) or 0  # Handle None from DB
     world = state.setdefault("world", {})
     characters = state.setdefault("characters", {})
     text = msg.text.strip()
