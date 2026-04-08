@@ -111,6 +111,11 @@ async def _handle_session_zero(
     characters = state.setdefault("characters", {})
     text = msg.text.strip()
 
+    # SAFEGUARD: If state looks corrupted/incomplete, reset to step 0
+    if step >= 1 and not world.get("setting"):
+        step = 0
+        state["step"] = 0
+
     # MULTIPLAYER: If another user is joining and we're past step 0,
     # skip world setup and go straight to their character creation
     if step >= 1 and str(user_id) not in characters:
@@ -128,11 +133,11 @@ async def _handle_session_zero(
                 "status_effects": [],
             }
             characters[str(user_id)] = char_data
-            
+
             # Advance step to 4 so next messages go to system selection
             if state.get("step") == 3:
                 state["step"] = 4
-            
+
             char_names = ", ".join(
                 c.get("name", "?") for c in characters.values() if c
             )
@@ -142,11 +147,12 @@ async def _handle_session_zero(
                 "Мир уже ждёт. Опиши свои первые действия или дождись начала."
             )
 
-        # If step 1-2, send character creation prompt
+        # step 1-2: advance to step 3 so next message creates the character
+        state["step"] = 3
         return (
             f"🎭 <b>{msg.first_name or 'Новый игрок'}, добро пожаловать!</b>\n\n"
-            f"Мир уже создан: <i>{world.get('setting', '?')[:100]}</i>\n"
-            f"Система: {world.get('system', '?')}\n\n"
+            f"Мир: <i>{world.get('setting', 'ещё не определён')}</i>\n"
+            f"Система: {world.get('system', 'ещё не выбрана')}\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
             f"<b>Создание Персонажа</b>\n\n"
             "Расскажи о своём герое:\n\n"
