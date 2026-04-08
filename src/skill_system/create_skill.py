@@ -29,7 +29,7 @@ compatibility:
 
 - Respond naturally in the chat's language and style
 - Use context from the conversation to give relevant answers
-- Be helpful but maintain Psina's personality
+- Be helpful but maintain the bot's personality
 
 ## Triggers
 

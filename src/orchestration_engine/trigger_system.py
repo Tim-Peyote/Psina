@@ -37,8 +37,8 @@ class TriggerResult:
 
 
 # Базовые имена (до того как бот выучит новые)
-BOT_NAMES = {"псина", "псінa", "psina"}
-BOT_ALIASES = {"пес", "пёс", "песик", "пёсик", "псинуля", "псин"}
+BOT_NAMES = {"бот", "bot"}
+BOT_ALIASES = {"ботяра", "ботик", "кореш", "корешок"}
 ALL_BOT_NAMES = BOT_NAMES | BOT_ALIASES
 
 
@@ -253,15 +253,15 @@ class TriggerSystem:
         mentions = re.findall(r'@(\w+)', text)
         all_names = self.get_all_names_for_chat(0)  # Check all known names
         for m in mentions:
-            if m.lower() in all_names or m.lower() in {"psina_bot", "psina"}:
+            if m.lower() in all_names or m.lower() in {"bot", "ботяра"}:
                 return 0.5
         return 0.0
 
     def _is_about_bot(self, text_lower: str) -> bool:
         """Текст про бота или про собак/псов вообще."""
-        if any(p in text_lower for p in [", псина", ", пес", ", пёс", "псина,", "пес,", "пёс,"]):
+        if any(p in text_lower for p in [", бот", ", ботяра", ", кореш", "бот,", "ботяра,", "кореш,"]):
             return True
-        if text_lower.startswith(("псина", "пес", "пёс")):
+        if text_lower.startswith(("бот", "ботяра", "кореш")):
             return True
         if any(w in text_lower for w in ["скажи", "расскажи", "помоги", "знаешь", "что думаешь"]):
             return True

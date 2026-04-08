@@ -1,5 +1,5 @@
 """
-Proactive Engine — Псина сама начинает разговор.
+Proactive Engine — Бот сама начинает разговор.
 
 Триггеры:
 - Утреннее приветствие
@@ -248,9 +248,9 @@ class ProactiveEngine:
 
     async def _try_holiday_greeting(self, chat_id: int, now: datetime) -> str | None:
         """Congratulate on holidays."""
-        from src.orchestration_engine.personality import PsinaPersonality
+        from src.orchestration_engine.personality import BotPersonality
 
-        holiday = PsinaPersonality._HOLIDAYS.get((now.month, now.day))
+        holiday = BotPersonality._HOLIDAYS.get((now.month, now.day))
         if not holiday:
             return None
 

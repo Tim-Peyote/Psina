@@ -30,23 +30,38 @@ class Retriever:
             author = m.user_id  # later resolved to name
             messages.append({"role": "user", "content": m.text})
 
-        # 3. Профиль пользователя
+        # 3. Профиль пользователя — только если там осмысленные данные
         profile = await self._get_user_profile(msg.user_id, msg.chat_id)
         if profile:
-            profile_ctx = f"Профиль пользователя: {profile.summary or 'нет данных'}"
+            profile_parts = []
+            
+            if profile.summary and len(profile.summary) > 5 and len(profile.summary) < 500:
+                profile_parts.append(f"О пользователе: {profile.summary}")
+            
             if profile.interests:
-                import json
-                interests = json.loads(profile.interests)
-                profile_ctx += f"\nИнтересы: {', '.join(interests[:5])}"
+                try:
+                    import json
+                    interests = json.loads(profile.interests)
+                    # Фильтруем короткие и бессмысленные интересы
+                    clean_interests = [i for i in interests if 5 < len(i) < 200]
+                    if clean_interests:
+                        profile_parts.append(f"Интересы: {', '.join(clean_interests[:5])}")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            
             if profile.traits:
-                import json
-                traits = json.loads(profile.traits)
-                profile_ctx += f"\nИнфо: {', '.join(traits[:5])}"
-            if profile.relationships:
-                import json
-                rels = json.loads(profile.relationships)
-                profile_ctx += f"\nСвязи: {', '.join(rels[:5])}"
-            messages.append({"role": "system", "content": profile_ctx})
+                try:
+                    import json
+                    traits = json.loads(profile.traits)
+                    clean_traits = [t for t in traits if 5 < len(t) < 200]
+                    if clean_traits:
+                        profile_parts.append(f"Инфо: {', '.join(clean_traits[:5])}")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            
+            if profile_parts:
+                profile_ctx = "\n".join(profile_parts)
+                messages.append({"role": "system", "content": profile_ctx})
 
         # 4. Релевантная память
         memories = await self._get_relevant_memories(msg.user_id, msg.chat_id)
@@ -102,13 +117,23 @@ class Retriever:
                             MemoryType.GROUP_RULE,
                             MemoryType.RELATIONSHIP,
                         ]),
+                        MemoryItem.source.in_(["extraction", "fact_extractor"]),  # Только извлечённые факты
+                        MemoryItem.confidence >= 0.5,  # Только уверенные факты
                     )
                 )
                 .order_by(MemoryItem.relevance.desc(), MemoryItem.created_at.desc())
                 .limit(limit)
             )
             result = await session.execute(stmt)
-            return list(result.scalars().all())
+            items = list(result.scalars().all())
+            
+            # Фильтруем мусорные записи
+            return [
+                item for item in items 
+                if item.content 
+                and 5 < len(item.content) < 500  # Не слишком короткие и не слишком длинные
+                and not item.content.startswith("[")  # Не сырые паттерны
+            ]
 
     def _enforce_token_limit(self, messages: list[dict]) -> list[dict]:
         """Обрезать сообщения сверх лимита."""

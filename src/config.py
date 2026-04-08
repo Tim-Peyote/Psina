@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     daily_token_budget: int = 100000
 
     # Bot identity
-    bot_name: str = "Псина"
-    bot_aliases: list[str] = ["пес", "пёс", "песик", "пёсик"]
+    bot_name: str = "Бот"
+    bot_aliases: list[str] = ["ботяра", "ботик", "кореш", "корешок"]
     bot_telegram_username: str = ""  # заполняется автоматически при старте
 
     # Bot behavior

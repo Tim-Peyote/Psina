@@ -214,22 +214,25 @@ class ContextPackBuilder:
                 import json
                 try:
                     traits = json.loads(profile.traits)
-                    if traits:
-                        parts.append(f"Черты: {', '.join(traits[:5])}")
+                    # Фильтруем мусор
+                    clean_traits = [t for t in traits if 5 < len(t) < 200 and not t.startswith("[")]
+                    if clean_traits:
+                        parts.append(f"Черты: {', '.join(clean_traits[:5])}")
                 except (json.JSONDecodeError, TypeError):
                     pass
             if profile.interests:
                 import json
                 try:
                     interests = json.loads(profile.interests)
-                    if interests:
-                        parts.append(f"Интересы: {', '.join(interests[:5])}")
+                    clean_interests = [i for i in interests if 5 < len(i) < 200 and not i.startswith("[")]
+                    if clean_interests:
+                        parts.append(f"Интересы: {', '.join(clean_interests[:5])}")
                 except (json.JSONDecodeError, TypeError):
                     pass
-            if profile.summary:
+            if profile.summary and 5 < len(profile.summary) < 500:
                 parts.append(f"О пользователе: {profile.summary}")
 
-            return "\n".join(parts)
+            return "\n".join(parts) if parts else ""
 
         return ""
 

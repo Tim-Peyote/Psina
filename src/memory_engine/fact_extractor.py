@@ -49,6 +49,14 @@ OTHER_FACT_PATTERNS = [
 ]
 
 
+def clean_fact_text(text: str) -> str:
+    """Очистить текст факта от служебных префиксов."""
+    # Убираем [О себе], [О Имя] и т.п.
+    text = re.sub(r'^\[О себе\]\s*', '', text)
+    text = re.sub(r'^\[О\s+\w+\]\s*', '', text)
+    return text.strip()
+
+
 class FactExtractor:
     """Извлекает факты из сообщений и сохраняет в память."""
 
@@ -86,8 +94,9 @@ class FactExtractor:
         for pattern, fact_type in DIRECT_FACT_PATTERNS:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
+                # Сохраняем только суть факта, без мусора
                 content = match.group(0).strip()
-                facts.append(f"[О себе] {content}")
+                facts.append(content)
 
         # Факты о других
         for pattern, fact_type in OTHER_FACT_PATTERNS:
@@ -95,7 +104,7 @@ class FactExtractor:
             if match:
                 person = match.group(1)
                 content = match.group(0).strip()
-                facts.append(f"[О {person}] {content}")
+                facts.append(content)
 
         return facts
 
@@ -170,15 +179,16 @@ class FactExtractor:
     async def update_profile_from_facts(self, user_id: int, chat_id: int) -> None:
         """Обновить профиль пользователя в конкретном чате на основе накопленных фактов."""
         async for session in get_session():
-            # Собираем все факты о пользователе в ЭТОМ чате
+            # Собираем факты из обоих источников: LLM-экстракция и pattern-based
             stmt = (
                 select(MemoryItem)
                 .where(
                     MemoryItem.user_id == user_id,
                     MemoryItem.chat_id == chat_id,
                     MemoryItem.type.in_([MemoryType.FACT, MemoryType.PREFERENCE]),
+                    MemoryItem.source.in_(["extraction", "fact_extractor"]),
                 )
-                .order_by(MemoryItem.created_at.desc())
+                .order_by(MemoryItem.confidence.desc(), MemoryItem.created_at.desc())
                 .limit(30)
             )
             result = await session.execute(stmt)
@@ -199,31 +209,77 @@ class FactExtractor:
                 profile = UserProfile(user_id=user_id, chat_id=chat_id)
                 session.add(profile)
 
-            # Группируем факты
+            # Группируем факты по категориям, очищая от мусора
             interests = []
             traits = []
             for fact in facts:
-                text = fact.content.lower()
-                if any(w in text for w in ["любит", "обожает", "нравится", "предпочитает", "любим"]):
-                    interests.append(fact.content)
-                elif any(w in text for w in ["работает", "жив", "учится", "из "]):
-                    traits.append(fact.content)
+                # Очищаем текст от префиксов
+                text = clean_fact_text(fact.content).lower()
+                original_clean = clean_fact_text(fact.content)
+                
+                # Пропускаем короткие и бессмысленные факты
+                if len(text) < 5:
+                    continue
+                
+                # Пропускаем вопросы и реплики (не факты)
+                if any(w in text for w in ["как ты", "что думаешь", "а ты", "ты "]):
+                    continue
 
+                # Интересы — предпочтения, хобби, вкусы
+                if any(w in text for w in ["любит", "обожает", "нравится", "предпочитает", "любим", "увлекается", "играет", "слушает", "смотрит", "нравится"]):
+                    interests.append(original_clean)
+                # Черты — профессия, навыки, статус, местоположение
+                elif any(w in text for w in ["работает", "жив", "учится", "из ", "программист", "разработчик", "дизайнер", "менеджер", "лет"]):
+                    traits.append(original_clean)
+                # Если не удалось классифицировать — добавляем в traits
+                else:
+                    traits.append(original_clean)
+
+            # Обновляем профиль только если есть осмысленные данные
             if interests:
-                profile.interests = json.dumps(list(set(interests)))
+                # Дедупликация по схожести
+                profile.interests = json.dumps(_deduplicate_facts(interests))
             if traits:
-                profile.traits = json.dumps(list(set(traits)))
+                profile.traits = json.dumps(_deduplicate_facts(traits))
 
-            # Создаём краткое резюме
+            # Создаём краткое резюме из очищенных фактов
             if facts:
                 summary_parts = []
-                if interests:
-                    summary_parts.append(f"Интересы: {', '.join(interests[:3])}")
                 if traits:
-                    summary_parts.append(f"Инфо: {', '.join(traits[:3])}")
+                    summary_parts.append(", ".join(traits[:3]))
+                if interests:
+                    summary_parts.append("Интересы: " + ", ".join(interests[:3]))
                 profile.summary = ". ".join(summary_parts)
 
             await session.commit()
+
+
+def _deduplicate_facts(facts: list[str], max_similar: float = 0.7) -> list[str]:
+    """Дедупликация фактов по схожести строк."""
+    if not facts:
+        return []
+    
+    result = [facts[0]]
+    for fact in facts[1:]:
+        fact_lower = fact.lower()
+        is_duplicate = False
+        for existing in result:
+            existing_lower = existing.lower()
+            # Проверяем вложенность
+            if fact_lower in existing_lower or existing_lower in fact_lower:
+                is_duplicate = True
+                break
+            # Проверяем пересечение слов
+            fact_words = set(fact_lower.split())
+            existing_words = set(existing_lower.split())
+            if fact_words and existing_words:
+                overlap = len(fact_words & existing_words) / max(len(fact_words), len(existing_words))
+                if overlap >= max_similar:
+                    is_duplicate = True
+                    break
+        if not is_duplicate:
+            result.append(fact)
+    return result
 
 
 fact_extractor = FactExtractor()

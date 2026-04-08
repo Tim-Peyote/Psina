@@ -1,8 +1,8 @@
 """
-Emotional State Engine — эмоциональное состояние Псины.
+Emotional State Engine — эмоциональное состояние бота.
 
-Псина не просто отвечает по настроению сообщения —
-у неё есть непрерывное эмоциональное состояние,
+Бот не просто отвечает по настроению сообщения —
+у него есть непрерывное эмоциональное состояние,
 которое эволюционирует от взаимодействий и времени.
 """
 
@@ -30,7 +30,7 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
 
 @dataclass
 class EmotionalState:
-    """Emotional state of Psina for a specific chat."""
+    """Emotional state of bot for a specific chat."""
 
     chat_id: int
     # -1.0 (angry/sad) .. 1.0 (happy/excited)

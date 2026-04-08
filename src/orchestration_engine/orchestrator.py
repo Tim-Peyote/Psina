@@ -1,5 +1,5 @@
 """
-Orchestrator — центральный мозг Псины.
+Orchestrator — центральный мозг бота.
 
 Новый пайплайн:
   message → track_context → ingest_memory → extract_facts → track_relationships
@@ -76,7 +76,7 @@ class ChatSettings:
 
 class Orchestrator:
     """
-    Центральный мозг Псины.
+    Центральный мозг бота.
 
     Главное правило:
     Бот читает всё → понимает контекст → отвечает только при высокой уверенности.
@@ -554,7 +554,7 @@ class Orchestrator:
             await skill_router.deactivate_skill(msg.chat_id, skill_slug)
 
             # Fallback: let normal pipeline handle the message instead of
-            # returning a generic error. Psina will respond naturally.
+            # returning a generic error. Bot will respond naturally.
             # We re-process through the normal response pipeline.
             context = context_tracker.get_context_for_message(msg)
             return await self._generate_response(msg, context, self._fallback_decision(msg))
@@ -637,32 +637,48 @@ class Orchestrator:
     async def handle_profile_command(self, user_id: int, chat_id: int) -> str:
         profile = await self.memory_engine.get_user_profile(user_id, chat_id)
         if not profile:
-            return "👤 Профиль ещё не создан. Пообщайся со мной!"
+            return "Профиль ещё не создан. Пообщайся со мной!"
 
-        parts = [f"👤 <b>{profile.display_name or 'User'}</b>"]
+        parts = [f"<b>Профиль пользователя</b>"]
+        
+        if profile.display_name:
+            parts.append(f"Имя: {profile.display_name}")
+            
         if profile.traits:
             import json
-            traits = json.loads(profile.traits)
-            if traits:
-                parts.append(f"\n🏷️ <b>Инфо:</b>")
-                for t in traits[:5]:
-                    parts.append(f"  • {t}")
+            try:
+                traits = json.loads(profile.traits)
+                if traits:
+                    parts.append(f"\n<b>Инфо:</b>")
+                    for t in traits[:5]:
+                        parts.append(f"  • {t}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+                
         if profile.interests:
             import json
-            interests = json.loads(profile.interests)
-            if interests:
-                parts.append(f"\n🎯 <b>Интересы:</b>")
-                for i in interests[:5]:
-                    parts.append(f"  • {i}")
+            try:
+                interests = json.loads(profile.interests)
+                if interests:
+                    parts.append(f"\n<b>Интересы:</b>")
+                    for i in interests[:5]:
+                        parts.append(f"  • {i}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+                
         if profile.relationships:
             import json
-            rels = json.loads(profile.relationships)
-            if rels:
-                parts.append(f"\n🤝 <b>Связи:</b>")
-                for r in rels[:5]:
-                    parts.append(f"  • {r}")
+            try:
+                rels = json.loads(profile.relationships)
+                if rels:
+                    parts.append(f"\n<b>Связи:</b>")
+                    for r in rels[:5]:
+                        parts.append(f"  • {r}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+                
         if profile.summary:
-            parts.append(f"\n📝 <b>О тебе:</b> {profile.summary}")
+            parts.append(f"\n<b>Краткое резюме:</b> {profile.summary}")
 
         return "\n".join(parts)
 

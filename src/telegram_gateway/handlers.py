@@ -256,7 +256,7 @@ async def handle_remind(message: Message, command: CommandObject) -> None:
     if not args:
         await _reply(message,
             "⏰ <b>Напоминания:</b>\n\n"
-            "Напиши мне: «Псина, напомни [когда] [что]»\n\n"
+            "Напиши мне: «Бот, напомни [когда] [что]»\n\n"
             "Примеры:\n"
             "• «напомни через 30 минут что проверить почту»\n"
             "• «напомни завтра в 15:00 что совещание»\n"
@@ -315,16 +315,14 @@ async def handle_vibe(message: Message) -> None:
 
     formality_text = "Формальный" if profile.is_formal else "Неформальный"
     mate_text = "Есть мат" if profile.has_mate else "Без мата"
-    emoji_text = "Много эмодзи" if profile.is_emoji_heavy else "Мало эмодзи"
 
     await _reply(message,
-        f"🎭 <b>Вайб чата:</b>\n\n"
+        f"<b>Вайб чата:</b>\n\n"
         f"Стиль: {formality_text}\n"
         f"Мат: {mate_text}\n"
-        f"Эмодзи: {emoji_text}\n"
         f"Настроение: {profile.mood}\n"
         f"Сообщений проанализировано: {profile.messages_analyzed}\n\n"
-        f"Псина подстраивается под этот стиль автоматически."
+        f"Бот подстраивается под этот стиль автоматически."
     )
 
 

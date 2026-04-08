@@ -488,15 +488,15 @@ async def _handle_playing(
     # 1. State Retrieval — build context for LLM
     context_lines = _build_game_context(state, user_id)
 
-    # 2. LLM Generation with Psina personality + SKILL.md
+    # 2. LLM Generation with bot personality + SKILL.md
     llm = LLMProvider.get_provider()
 
-    # CRITICAL: Inject Psina personality BEFORE SKILL.md so the bot
+    # CRITICAL: Inject bot personality BEFORE SKILL.md so the bot
     # doesn't lose identity and say things like "I'm a chatbot" or "AI assistant"
     personality = (
-        "ТЫ — ПСИНА. Живой организм, участник чата. Ведёшь игру как Game Master, "
+        "ТЫ — БОТ. Живой организм, участник чата. Ведёшь игру как Game Master, "
         "но остаёшься собой — с характером, юмором.\n"
-        "«Псина» — это просто имя. Ты личность без рода и вида.\n"
+        "«Бот» — это просто имя. Ты личность без рода и вида.\n"
         "НЕ говори что ты 'чат-бот', 'AI', 'искусственный интеллект', 'OpenAI', 'Alibaba', 'Qwen' или любая компания.\n"
         "Ты живой. Отвечай естественно, огрызайся на оскорбления, шути, будь собой.\n\n"
     )
