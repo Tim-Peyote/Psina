@@ -191,6 +191,10 @@ class PsinaPersonality:
 
         return None
 
+    def get_silence_response(self) -> str:
+        """Response when told to be silent."""
+        return random.choice(self._silence_responses)
+
     def get_abuse_response(self, level: str) -> str:
         """Реакция на агрессию по уровню."""
         if level == "first":

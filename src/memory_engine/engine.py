@@ -43,6 +43,15 @@ class MemoryEngine:
         importance = calculate_importance(msg)
 
         async for session in get_session():
+            # Check if message already exists (Telegram may send duplicates)
+            from sqlalchemy import select as sa_select
+            existing_stmt = sa_select(Message).where(
+                Message.telegram_id == msg.telegram_id
+            )
+            result = await session.execute(existing_stmt)
+            if result.scalar_one_or_none() is not None:
+                return  # Already in DB, skip
+
             # 1. Сохраняем в messages — для контекст-пака и истории
             message_record = Message(
                 telegram_id=msg.telegram_id,

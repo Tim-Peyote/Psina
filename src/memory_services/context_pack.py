@@ -122,7 +122,7 @@ class ContextPackBuilder:
 
     async def _get_recent_messages(self, chat_id: int) -> list[dict]:
         """Get recent messages from the chat, resolving author names."""
-        from src.database.models import UserProfile
+        from src.database.models import UserProfile, User
 
         async for session in get_session():
             stmt = (
@@ -140,8 +140,10 @@ class ContextPackBuilder:
         # Collect user IDs to resolve names
         user_ids = {m.user_id for m in messages if m.user_id and m.user_id > 0}
 
-        # Resolve names from user_profiles
+        # Resolve names: first try user_profiles.display_name, then User.first_name/username
         user_names: dict[int, str] = {}
+
+        # From user_profiles
         if user_ids:
             stmt = select(UserProfile).where(
                 UserProfile.chat_id == chat_id,
@@ -150,8 +152,19 @@ class ContextPackBuilder:
             result = await session.execute(stmt)
             profiles = list(result.scalars().all())
             for p in profiles:
-                name = p.display_name or f"user_{p.user_id}"
-                user_names[p.user_id] = name
+                if p.display_name:
+                    user_names[p.user_id] = p.display_name
+
+        # From User table (fallback for users without profiles)
+        missing_ids = user_ids - set(user_names.keys())
+        if missing_ids:
+            stmt = select(User).where(User.id.in_(missing_ids))
+            result = await session.execute(stmt)
+            users = list(result.scalars().all())
+            for u in users:
+                name = u.first_name or u.username
+                if name:
+                    user_names[u.id] = name
 
         return [
             {
