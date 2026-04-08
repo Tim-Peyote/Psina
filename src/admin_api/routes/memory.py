@@ -375,3 +375,108 @@ async def trigger_compaction(chat_id: int | None = Query(None)) -> dict:
     else:
         results = await compaction_service.compact_all_chats()
         return {"status": "success", "chats_compacted": len(results)}
+
+
+class ClearChatRequest(BaseModel):
+    chat_id: int
+
+
+class ClearChatResponse(BaseModel):
+    status: str
+    chat_id: int
+    deleted: dict
+
+
+@router.post("/clear-chat", response_model=ClearChatResponse)
+async def clear_chat_full(request: ClearChatRequest) -> ClearChatResponse:
+    """Полная очистка всех данных конкретного чата.
+
+    Удаляет:
+    - MemoryItem (факты, предпочтения, события)
+    - MemorySummary (саммари сессий)
+    - MemoryExtractionBatch (история экстракции)
+    - UserProfile (профили пользователей в этом чате)
+    - ChatVibeProfile (вайб чата)
+    - Message (сообщения)
+    - SkillState (активные сессии скиллов)
+    """
+    from src.database.models import (
+        UserProfile, ChatVibeProfile, Message,
+        SkillState, Reminder,
+    )
+
+    chat_id = request.chat_id
+    deleted = {
+        "memory_items": 0,
+        "memory_summaries": 0,
+        "extraction_batches": 0,
+        "user_profiles": 0,
+        "vibe_profile": 0,
+        "messages": 0,
+        "skill_states": 0,
+    }
+
+    async for session in get_session():
+        # 1. Memory items
+        stmt = select(MemoryItem).where(MemoryItem.chat_id == chat_id)
+        result = await session.execute(stmt)
+        items = list(result.scalars().all())
+        deleted["memory_items"] = len(items)
+        for item in items:
+            await session.delete(item)
+
+        # 2. Memory summaries
+        stmt = select(MemorySummary).where(MemorySummary.chat_id == chat_id)
+        result = await session.execute(stmt)
+        summaries = list(result.scalars().all())
+        deleted["memory_summaries"] = len(summaries)
+        for s in summaries:
+            await session.delete(s)
+
+        # 3. Extraction batches
+        stmt = select(MemoryExtractionBatch).where(MemoryExtractionBatch.chat_id == chat_id)
+        result = await session.execute(stmt)
+        batches = list(result.scalars().all())
+        deleted["extraction_batches"] = len(batches)
+        for b in batches:
+            await session.delete(b)
+
+        # 4. User profiles (только для этого чата)
+        stmt = select(UserProfile).where(UserProfile.chat_id == chat_id)
+        result = await session.execute(stmt)
+        profiles = list(result.scalars().all())
+        deleted["user_profiles"] = len(profiles)
+        for p in profiles:
+            await session.delete(p)
+
+        # 5. Vibe profile
+        stmt = select(ChatVibeProfile).where(ChatVibeProfile.chat_id == chat_id)
+        result = await session.execute(stmt)
+        vibes = list(result.scalars().all())
+        deleted["vibe_profile"] = len(vibes)
+        for v in vibes:
+            await session.delete(v)
+
+        # 6. Messages
+        stmt = select(Message).where(Message.chat_id == chat_id)
+        result = await session.execute(stmt)
+        messages = list(result.scalars().all())
+        deleted["messages"] = len(messages)
+        for m in messages:
+            await session.delete(m)
+
+        # 7. Skill states
+        stmt = select(SkillState).where(SkillState.chat_id == chat_id)
+        result = await session.execute(stmt)
+        skills = list(result.scalars().all())
+        deleted["skill_states"] = len(skills)
+        for s in skills:
+            await session.delete(s)
+
+        await session.commit()
+
+    return ClearChatResponse(
+        status="cleared",
+        chat_id=chat_id,
+        deleted=deleted,
+    )

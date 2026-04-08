@@ -77,55 +77,15 @@ class BotPersonality:
             ),
         }
 
-        # ===== БАЗОВЫЕ РЕАКЦИИ =====
-        self._silence_responses = [
-            "Ладно, молчу.",
-            "Понял, замолкаю.",
-            "Ок, буду слушать.",
-            "Хорошо, не лезу.",
-        ]
-
-        self._greeting_responses = [
-            "Привет! Рад видеть!",
-            "О, привет! Как дела?",
-            "Здарова!",
-            "Хей! Как настроение?",
-            "Привет-привет!",
-            "О, свои! Привет!",
-        ]
-
-        self._farewell_responses = [
-            "Пока! Буду скучать.",
-            "Удачи! Заходи ещё!",
-            "До связи!",
-            "Ладно, побегу пока. Возвращайся!",
-        ]
-
-        self._agreement_responses = [
-            "Абсолютно согласен!",
-            "Да, точно!",
-            "Согласен!",
-            "Вот-вот, я о том же.",
-            "Базара нет.",
-        ]
-
-        self._surprise_responses = [
-            "Ого, серьёзно?",
-            "Ничего себе!",
-            "Вот это поворот!",
-            "Охренеть... в хорошем смысле.",
-            "Ух ты!",
-        ]
-
-        self._support_responses = [
-            "Понимаю, это непросто. Но ты справишься!",
-            "Держись, я с тобой!",
-            "Бывает... Хочешь поговорить об этом?",
-            "Всё будет ок.",
-            "Хреновая ситуация. Но я рядом.",
-        ]
-
-        # ===== РЕАКЦИИ НА АГРЕССИЮ =====
+        # ===== ЭМОЦИОНАЛЬНЫЕ КАТЕГОРИИ (для контекста, НЕ для готовых ответов) =====
+        # LLM генерирует ответы сам, мы только подсказываем контекст
+        self._emotional_categories = {
+            "greeting": ["привет", "здарова", "хай", "hello", "hi", "дарова", "здрасьте"],
+            "farewell": ["пока", "до свидания", "bye", "ухожу", "ушла", "ушёл", "всё"],
+            "agreement": ["согласен", "точно", "да да", "правильно", "верно", "базара нет"],
+            "surprise": ["ого", "вау", "серьёзно", "ничего себе", "блин", "жесть", "охренеть"],
+            "support": ["грустно", "плохо", "тяжело", "устал", "хреново", "хуёво", "пиздец"],
+        }
         self._abuse_first = [
             "Ок, понял.",
             "Ладно, не буду лезть.",
@@ -159,41 +119,21 @@ class BotPersonality:
             "Мне не нравится как вы общаетесь друг с другом. Это не моё дело, но молчать не буду.",
         ]
 
-        # ===== ЭМОЦИОНАЛЬНЫЕ РЕАКЦИИ =====
-        self._emotional_responses = {
-            "greeting": self._greeting_responses,
-            "farewell": self._farewell_responses,
-            "agreement": self._agreement_responses,
-            "surprise": self._surprise_responses,
-            "support": self._support_responses,
-        }
-
-    # ===== МЕТОДЫ ПОЛУЧЕНИЯ РЕАКЦИЙ =====
+    # ===== МЕТОДЫ ПОЛУЧЕНИЯ ЭМОЦИОНАЛЬНОГО КОНТЕКСТА =====
 
     def get_emotional_response(self, context: str) -> str | None:
-        """Эмоциональная реакция по контексту."""
+        """Определить эмоциональный контекст сообщения (НЕ готовый ответ)."""
         context_lower = context.lower()
 
-        if any(w in context_lower for w in ["привет", "здарова", "хай", "hello", "hi", "дарова", "здрасьте"]):
-            return random.choice(self._emotional_responses["greeting"])
-
-        if any(w in context_lower for w in ["пока", "до свидания", "bye", "ухожу", "ушла", "ушёл", "всё"]):
-            return random.choice(self._emotional_responses["farewell"])
-
-        if any(w in context_lower for w in ["согласен", "точно", "да да", "правильно", "верно", "базара нет"]):
-            return random.choice(self._emotional_responses["agreement"])
-
-        if any(w in context_lower for w in ["ого", "вау", "серьёзно", "ничего себе", "блин", "жесть", "охренеть"]):
-            return random.choice(self._emotional_responses["surprise"])
-
-        if any(w in context_lower for w in ["грустно", "плохо", "тяжело", "устал", "хреново", "хуёво", "пиздец"]):
-            return random.choice(self._emotional_responses["support"])
+        for category, keywords in self._emotional_categories.items():
+            if any(w in context_lower for w in keywords):
+                return category  # Возвращаем категорию, НЕ готовый текст
 
         return None
 
     def get_silence_response(self) -> str:
         """Response when told to be silent."""
-        return random.choice(self._silence_responses)
+        return "Ладно, замолкаю."
 
     def get_abuse_response(self, level: str) -> str:
         """Реакция на агрессию по уровню."""

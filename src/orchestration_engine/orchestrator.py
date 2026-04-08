@@ -435,13 +435,23 @@ class Orchestrator:
         # Don't duplicate it. The last message in recent_messages IS the current one.
         # Only add emotional/tone/strategy hints on top.
 
-        # Эмоциональная реакция
+        # Эмоциональная подсказка для LLM (НЕ готовый ответ!)
         emotional = bot_personality.get_emotional_response(msg.text)
         if emotional:
-            llm_messages.append({
-                "role": "system",
-                "content": f"Твоя эмоциональная реакция: {emotional}. Можешь начать с этого.",
-            })
+            # Даём LLM понять контекст, но НЕ диктуем ответ
+            emotional_hints = {
+                "greeting": "Пользователь приветствует. Отреагируй тепло, по-своему.",
+                "farewell": "Пользователь прощается. Скажи что-то от себя.",
+                "agreement": "Пользователь соглашается. Подхвати настрой.",
+                "surprise": "Пользователь удивлён. Можешь отреагировать.",
+                "support": "Пользователю непросто. Будь рядом, но не шаблонно.",
+            }
+            hint = emotional_hints.get(emotional)
+            if hint:
+                llm_messages.append({
+                    "role": "system",
+                    "content": hint,
+                })
 
         # Тон
         tone = bot_personality.adjust_tone(msg.text)
@@ -725,6 +735,35 @@ class Orchestrator:
             f"Модель: <code>{settings.llm_model}</code>\n"
             f"Провайдер: <code>{settings.llm_provider}</code>"
         )
+
+    async def handle_clear_command(self, user_id: int, chat_id: int) -> str:
+        """Полная очистка контекста чата."""
+        import httpx
+        from src.config import settings
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"http://localhost:{settings.admin_api_port}/api/memory/clear-chat",
+                    json={"chat_id": chat_id},
+                    headers={"Authorization": f"Bearer {settings.admin_api_secret}"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    deleted = data.get("deleted", {})
+                    total = sum(deleted.values())
+                    return f"✅ Чат очищен. Удалено: {total} записей\n" \
+                           f"  • Память: {deleted.get('memory_items', 0)}\n" \
+                           f"  • Саммари: {deleted.get('memory_summaries', 0)}\n" \
+                           f"  • Профили: {deleted.get('user_profiles', 0)}\n" \
+                           f"  • Сообщения: {deleted.get('messages', 0)}\n" \
+                           f"  • Вайб: {deleted.get('vibe_profile', 0)}\n" \
+                           f"  • Скиллы: {deleted.get('skill_states', 0)}\n\n" \
+                           f"Начинаем с чистого листа."
+                else:
+                    return f"❌ Ошибка очистки: {resp.status_code}"
+        except Exception as e:
+            return f"❌ Ошибка: {str(e)}"
 
     async def handle_model_command(self) -> str:
         return (

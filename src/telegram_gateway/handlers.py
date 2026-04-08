@@ -143,6 +143,7 @@ async def handle_help(message: Message) -> None:
         "/summary — дневная сводка\n"
         "/memory — что я помню\n"
         "/profile — твой профиль\n"
+        "/clear — полная очистка контекста чата\n"
         "/mode — текущий режим бота\n"
         "/game — игровые команды\n"
         "/settings — настройки чата\n"
@@ -186,6 +187,15 @@ async def handle_profile(message: Message) -> None:
     user_id = message.from_user.id if message.from_user else 0
     chat_id = message.chat.id
     result = await orchestrator.handle_profile_command(user_id, chat_id)
+    await _reply(message, result)
+
+
+@router.message(Command("clear"))
+async def handle_clear(message: Message) -> None:
+    """Команда /clear — полная очистка контекста чата."""
+    user_id = message.from_user.id if message.from_user else 0
+    chat_id = message.chat.id
+    result = await orchestrator.handle_clear_command(user_id, chat_id)
     await _reply(message, result)
 
 
