@@ -95,6 +95,9 @@ class Orchestrator:
         # Tracks which chats have had users loaded from DB
         self._chat_users_loaded: set[int] = set()
 
+        # Last skill error for debug
+        self._last_skill_error: dict | None = None
+
         logger.info("Orchestrator initialized", bot_name=settings.bot_name)
 
     def _get_settings(self, chat_id: int) -> ChatSettings:
@@ -557,8 +560,17 @@ class Orchestrator:
             else:
                 # Custom handler (module with process_message)
                 return await handler.process_message(msg, msg.chat_id, msg.user_id)
-        except Exception:
-            logger.exception("Skill handler failed", skill=skill_slug)
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            logger.error("Skill handler failed: %s\n%s", e, tb, skill=skill_slug)
+            # Store error for debug endpoint
+            self._last_skill_error = {
+                "skill": skill_slug,
+                "error": str(e),
+                "traceback": tb,
+                "chat_id": msg.chat_id,
+            }
             # CRITICAL: Deactivate skill session so subsequent messages
             # don't get stuck in a broken skill loop
             await skill_router.deactivate_skill(msg.chat_id, skill_slug)

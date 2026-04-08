@@ -67,4 +67,33 @@ def create_app() -> FastAPI:
 
         return status
 
+    @app.get("/api/debug/skill-state")
+    async def debug_skill_state(chat_id: int) -> dict:
+        """Debug endpoint: show RPG skill state for a chat."""
+        from src.database.models import SkillState
+        from src.database.session import get_session
+        from sqlalchemy import select
+
+        async for session in get_session():
+            stmt = select(SkillState).where(
+                SkillState.chat_id == chat_id,
+                SkillState.skill_slug == "agent_rpg",
+            )
+            result = await session.execute(stmt)
+            record = result.scalar_one_or_none()
+
+            if record:
+                return {
+                    "found": True,
+                    "is_active": record.is_active,
+                    "phase": record.state_json.get("phase"),
+                    "step": record.state_json.get("step"),
+                    "characters": list(record.state_json.get("characters", {}).keys()),
+                    "world_setting": record.state_json.get("world", {}).get("setting"),
+                    "full_state": record.state_json,
+                }
+            return {"found": False, "chat_id": chat_id}
+
+        return {"error": "no_db_session"}
+
     return app

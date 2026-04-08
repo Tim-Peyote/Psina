@@ -44,21 +44,25 @@ async def process_message(
     chat_id: int,
     user_id: int,
 ) -> str | None:
-    """Process a message through the RPG skill.
+    """Process a message through the RPG skill."""
+    try:
+        logger.debug("rpg_handler.entry", chat_id=chat_id, user_id=user_id, text=msg.text[:50])
 
-    Phase 2: Activate SKILL.md if not already loaded.
-    Phase 3: Execute using full instructions.
-    """
-    # Activate: load full SKILL.md (~5000 tokens) only once
-    skill = await skill_registry.activate_skill_by_slug("agent-rpg")
-    if not skill:
-        return "⚠️ Скилл не найден."
+        # Activate: load full SKILL.md (~5000 tokens) only once
+        skill = await skill_registry.activate_skill_by_slug("agent-rpg")
+        if not skill:
+            return "⚠️ Скилл не найден."
 
-    system_prompt = skill.full_content
+        system_prompt = skill.full_content
+        logger.debug("rpg_handler.skill_loaded", tokens=len(system_prompt))
 
-    state = await skill_state_manager.get_state(
-        "agent_rpg", chat_id, default=dict(DEFAULT_CAMPAIGN_STATE)
-    )
+        state = await skill_state_manager.get_state(
+            "agent_rpg", chat_id, default=dict(DEFAULT_CAMPAIGN_STATE)
+        )
+        logger.debug("rpg_handler.state_loaded", state_type=type(state).__name__, state_keys=list(state.keys()) if isinstance(state, dict) else "not_dict")
+    except Exception as e:
+        logger.error("rpg_handler.init_failed", error=str(e), exc_info=True)
+        raise
 
     # Validate state structure — DB can return None for any field
     if not isinstance(state, dict):
@@ -79,15 +83,20 @@ async def process_message(
         return None
 
     if phase == "session_zero":
+        logger.debug("rpg.processing.session_zero")
         response = await _handle_session_zero(msg, state, chat_id, user_id, system_prompt)
     elif phase == "playing":
+        logger.debug("rpg.processing.playing")
         response = await _handle_playing(msg, state, chat_id, user_id, system_prompt)
     elif phase == "paused":
+        logger.debug("rpg.processing.paused")
         response = await _handle_paused(msg, state)
     elif phase == "ended":
         response = "🏁 Игра завершена. Начни новую: /rpg"
     else:
         response = "⚠️ Неизвестное состояние. Перезапусти: /rpg start"
+
+    logger.debug("rpg.processing.done", phase=phase, response_len=len(response) if response else 0)
 
     # Save state after every action
     logger.debug("rpg_state_saved", phase=state.get("phase"), step=state.get("step"), chars=list(state.get("characters", {}).keys()))
@@ -108,20 +117,13 @@ async def _handle_session_zero(
     user_id: int,
     system_prompt: str,
 ) -> str:
-    """Handle Session Zero — conversational step-by-step setup.
-
-    Steps:
-    0. Welcome
-    1. World & Premise (setting + hook)
-    2. Factions & Power Web
-    3. Character Creation (identity, attributes, drive, flaw)
-    4. System & Mechanics (d20/pbta/d100/freeform)
-    5. Boundaries & Tone (lines & veils)
-    """
-    step = state.get("step", 0) or 0  # Handle None from DB
+    """Handle Session Zero — conversational step-by-step setup."""
+    step = state.get("step", 0) or 0
     world = state.setdefault("world", {})
     characters = state.setdefault("characters", {})
     text = msg.text.strip()
+    
+    logger.debug("rpg.session_zero.entry", chat_id=chat_id, user_id=user_id, step=step, has_setting=bool(world.get("setting")))
 
     # SAFEGUARD: If state looks corrupted (past step 1 but no world data),
     # reset to step 0. Note: step 1 hasn't set world.setting yet, so only
@@ -130,8 +132,6 @@ async def _handle_session_zero(
         logger.warning("rpg_state_corrupted_reset", step=step, setting=world.get("setting"))
         step = 0
         state["step"] = 0
-
-    logger.debug("rpg_state_loaded", phase=phase, step=step, user_in_chars=str(user_id) in characters)
 
     # MULTIPLAYER: If another user is joining and we're past step 0,
     # skip world setup and go straight to their character creation
