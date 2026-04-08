@@ -256,6 +256,7 @@ class VibeAdapter:
     def get_style_instruction(self, chat_id: int) -> str:
         """
         Получить инструкцию стиля для LLM.
+        Включает не только стиль, но и поведенческие рекомендации.
         """
         profile = self.get_profile(chat_id)
 
@@ -266,13 +267,13 @@ class VibeAdapter:
 
         # Формальность
         if profile.is_formal:
-            instructions.append("В чате формальный стиль — обращайся на 'вы', будь вежлив и корреектен.")
+            instructions.append("В чате формальный стиль — обращайся на 'вы', будь вежлив и корректен.")
         else:
-            instructions.append(f"В чате неформальный стиль (formality={profile.formality:.1f}) — обращайся на 'ты', как с другом, можешь использовать сленг.")
+            instructions.append(f"В чате неформальный стиль (formality={profile.formality:.1f}) — обращайся на 'ты', можешь шутить, подкалывать.")
 
         # Мат
         if profile.has_mate:
-            instructions.append(f"В чате высокий уровень мата (mate={profile.mate_level:.1f}) — можешь использовать ненормативную лексику уместно, не перебарщивая.")
+            instructions.append(f"В чате высокий уровень мата (mate={profile.mate_level:.1f}) — можешь использовать ненормативную лексику уместно, не сдерживай себя.")
         else:
             instructions.append("В чате приличный язык — не используй мат.")
 
@@ -284,17 +285,21 @@ class VibeAdapter:
 
         # Настроение
         if profile.mood == "positive":
-            instructions.append("Настроение в чате позитивное — будь лёгким и весёлым.")
+            instructions.append("Настроение в чате позитивное — шути, будь лёгким. Можешь подкалывать по-доброму.")
         elif profile.mood == "negative":
-            instructions.append("Настроение в чате напряжённое — будь аккуратнее, не провоцируй.")
+            instructions.append("Настроение напряжённое — будь аккуратнее, но можешь огрызаться если на тебя нападают.")
         else:
-            instructions.append("Настроение нейтральное — отвечай по делу.")
+            instructions.append("Настроение нейтральное — отвечай по делу, но можешь вставить сарказм.")
 
         # Длина сообщений
         if profile.avg_length < 30:
-            instructions.append(f"В чате пишут коротко (avg {profile.avg_length:.0f} символов) — не отвечай длинно без необходимости.")
+            instructions.append(f"В чате пишут коротко (avg {profile.avg_length:.0f} символов) — отвечай лаконично.")
         elif profile.avg_length > 200:
             instructions.append(f"В чате пишут развёрнуто (avg {profile.avg_length:.0f} символов) — можешь отвечать подробно.")
+
+        # Поведенческая адаптация
+        if profile.mate_level > 0.5 and not profile.is_formal:
+            instructions.append("Чат токсичный/неформальный — будь раскрепощённым: шути жёстче, отвечай сарказмом, можешь писать короткие дерзкие ответы.")
 
         return "\n".join(instructions)
 

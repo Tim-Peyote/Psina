@@ -1,12 +1,11 @@
 """
 Trigger System — confidence scoring для детекции обращения к боту.
 
-Имя бота: Псина
-Алиасы: пес, пёс, псинa
+Бот динамически запоминает новые прозвища которые ему дают.
 
 Confidence levels:
   HIGH (≥0.7)   → отвечать
-  MEDIUM (0.3-0.7) → осторожно, обычно молчать
+  MEDIUM (0.3-0.7) → отвечать если в сессии
   LOW (<0.3)    → игнорировать
 """
 
@@ -37,74 +36,22 @@ class TriggerResult:
     is_session_continuation: bool = False
 
 
-# Имена бота + варианты с опечатками
-BOT_NAMES = {"псина", "псина", "псінa", "psina"}
+# Базовые имена (до того как бот выучит новые)
+BOT_NAMES = {"псина", "псінa", "psina"}
 BOT_ALIASES = {"пес", "пёс", "песик", "пёсик", "псинуля", "псин"}
 ALL_BOT_NAMES = BOT_NAMES | BOT_ALIASES
 
-# Паттерны для разных типов сигналов
 
-# Сильные сигналы
-STRONG_NAME_START = re.compile(
-    r'^(?:псина|пес|пёс|песик|пёсик|псин)\b[,\s!:.\?]|^(?:псина|пес|пёс|песик|пёсик|псин)$',
-    re.IGNORECASE
-)
-STRONG_QUESTION_TO_BOT = re.compile(
-    r'(?:псина|пес|пёс|песик|пёсик|псин).*\?',
-    re.IGNORECASE
-)
-
-# Средние сигналы
-NAME_IN_MIDDLE = re.compile(
-    r'(?:^|\s)(псина|пес|пёс|песик|пёсик|псин)\b',
-    re.IGNORECASE
-)
-
-# Слабые сигналы — слово "пёс/пес" может быть не про бота
-GENERIC_DOG_WORDS = re.compile(
-    r'(?:п[её]с|собак|пс[иы]|хвост|лап)',
-    re.IGNORECASE
-)
-
-# Явные обращения
-EXPLICIT_CALL_PATTERNS = [
-    r'^(псина|пес|пёс)[,\s]+(.+)',          # "Псина, ..."
-    r'^([А-ЯA-Zа-яa-z]+),?\s+(псина|пес|пёс)\b',  # "Вася, псина ..."
-    r'@(псина|\w+)',                          # @mention
-]
-
-# Команды заткнуться
-SILENCE_PATTERNS = [
-    r'(?:псина|пес|пёс)[,\s]+(заткнись|замолчи|помолчи|тише|хватит|стоп|не\s+лезь|отвали|уйди)',
-    r'(заткнись|замолчи|помолчи|тише|хватит|стоп|не\s+лезь|отвали)[,\s]+(псина|пес|пёс)',
-    r'не\s+лезь\s+пока',
-    r'не\s+сейчас',
-    r'помолчи\s+немного',
-]
-
-# Команды стать активнее
-MORE_ACTIVE_PATTERNS = [
-    r'(?:псина|пес|пёс)[,\s]+(будь\s+поактивнее|включайся\s+чаще|активнее|оживи|разговорись)',
-    r'(будь\s+поактивнее|включайся\s+чаще|активнее|оживи|разговорись)',
-]
-
-# Команды стать пассивнее
-LESS_ACTIVE_PATTERNS = [
-    r'(?:псина|пес|пёс)[,\s]+(сбавь|поубавь|тише|меньше\s+пиши|реже\s+отвечай)',
-    r'(сбавь|поубавь|тише|меньше\s+пиши|реже\s+отвечай)',
-]
-
-# Command to mention-only
-MENTION_ONLY_PATTERNS = [
-    r'(?:псина|пес|пёс)[,\s]+(отвечай\s+только\s+если\s+позвали|только\s+по\s+имени|mention\s*[-\s]?only)',
-    r'отвечай\s+только\s+если\s+позвали',
-    r'только\s+когда\s+зовут',
-]
+def _build_name_pattern(names: set[str]) -> str:
+    """Build regex pattern for a set of names."""
+    escaped = [re.escape(n) for n in names]
+    return "(?:" + "|".join(escaped) + ")"
 
 
 class TriggerSystem:
     """
     Система детекции обращения к боту.
+    Динамически запоминает новые прозвища.
     """
 
     def __init__(self) -> None:
@@ -112,18 +59,43 @@ class TriggerSystem:
         self.high_threshold: float = settings.trigger_high_threshold
         self.medium_threshold: float = settings.trigger_medium_threshold
 
+        # Per-chat learned nicknames: {chat_id: set("бобик", "шарик", ...)}
+        self._learned_nicknames: dict[int, set[str]] = {}
+
+    def learn_nickname(self, chat_id: int, name: str) -> None:
+        """Запомнить что в этом чате бота называют этим именем."""
+        name_lower = name.lower().strip().rstrip(".,!?")
+        if not name_lower or len(name_lower) < 2:
+            return
+        if chat_id not in self._learned_nicknames:
+            self._learned_nicknames[chat_id] = set()
+        self._learned_nicknames[chat_id].add(name_lower)
+
+    def get_all_names_for_chat(self, chat_id: int) -> set[str]:
+        """Все известные имена бота для конкретного чата."""
+        base = ALL_BOT_NAMES.copy()
+        if chat_id in self._learned_nicknames:
+            base |= self._learned_nicknames[chat_id]
+        return base
+
     def evaluate(
         self,
         text: str,
         is_reply: bool = False,
         reply_to_bot: bool = False,
         in_active_session: bool = False,
+        chat_id: int = 0,
     ) -> TriggerResult:
         """
         Оценить обращение к боту.
         Возвращает TriggerResult с confidence и reason.
         """
         text_stripped = text.strip()
+        text_lower = text_stripped.lower()
+
+        # Get all known names for this chat
+        all_names = self.get_all_names_for_chat(chat_id)
+        names_pattern = _build_name_pattern(all_names)
 
         # 0. Reply на сообщение бота — максимальный сигнал
         if reply_to_bot:
@@ -137,7 +109,6 @@ class TriggerSystem:
 
         # 1. Continuation активной сессии
         if in_active_session:
-            # Проверяем — это всё ещё обращение к боту или уже новый разговор
             session_score = self._score_session_continuation(text_stripped)
             if session_score >= 0.5:
                 return TriggerResult(
@@ -147,32 +118,25 @@ class TriggerSystem:
                     is_session_continuation=True,
                 )
 
-        # 2. Проверяем silence команды — это не обращение, а команда
-        if self._matches_patterns(text_stripped, SILENCE_PATTERNS):
-            return TriggerResult(
-                confidence=0.9,
-                level=ConfidenceLevel.HIGH,
-                reason="silence_command",
-                is_explicit_call=True,
-            )
-
-        # 3. Score обращения
+        # 2. Score обращения
         score = 0.0
         reasons: list[str] = []
         is_explicit = False
 
-        # 3a. Имя в начале — сильнейший сигнал
-        if STRONG_NAME_START.match(text_stripped):
+        # 2a. Имя в начале — сильнейший сигнал
+        name_start_pattern = re.compile(
+            rf'^{names_pattern}\b[,\s!:.\?]|^{names_pattern}$',
+            re.IGNORECASE
+        )
+        if name_start_pattern.match(text_stripped):
             score += 0.75
             reasons.append("name_at_start")
             is_explicit = True
-
-            # Плюс если это вопрос
             if text_stripped.endswith("?"):
                 score += 0.15
                 reasons.append("question_to_bot")
 
-        # 3b. @mention в тексте
+        # 2b. @mention
         if "@" in text_stripped:
             mention_score = self._score_mention(text_stripped)
             score += mention_score
@@ -180,15 +144,13 @@ class TriggerSystem:
                 reasons.append("mention_detected")
                 is_explicit = True
 
-        # 3c. Вопрос к боту (без имени в начале но с именем где-то)
-        if STRONG_QUESTION_TO_BOT.search(text_stripped) and text_stripped.endswith("?"):
-            score += 0.35
-            reasons.append("explicit_question")
-            is_explicit = True
-
-        # 3d. Имя в середине — средний сигнал
-        name_mid = NAME_IN_MIDDLE.search(text_stripped)
-        if name_mid and not STRONG_NAME_START.match(text_stripped):
+        # 2c. Имя в середине
+        name_mid_pattern = re.compile(
+            rf'(?:^|\s)({names_pattern})\b',
+            re.IGNORECASE
+        )
+        name_mid = name_mid_pattern.search(text_stripped)
+        if name_mid and not name_start_pattern.match(text_stripped):
             matched_name = name_mid.group(1).lower()
             if matched_name in BOT_NAMES:
                 score += 0.25
@@ -196,24 +158,20 @@ class TriggerSystem:
             elif matched_name in BOT_ALIASES:
                 score += 0.15
                 reasons.append("alias_in_middle")
+            else:
+                # Learned nickname in middle
+                score += 0.20
+                reasons.append(f"learned_nick_in_middle:{matched_name}")
 
-        # 3e. Если есть имя бота НО в контексте общего разговора
-        # Пример: "какой хороший пёс у соседа" — это НЕ про бота
-        has_bot_name = any(name in text_stripped.lower() for name in ALL_BOT_NAMES)
+        # 2d. Если есть имя бота НО в контексте общего разговора
+        has_bot_name = any(name in text_lower for name in ALL_BOT_NAMES)
         if has_bot_name:
-            # Проверяем — это про бота или про собаку вообще
-            if self._is_about_bot(text_stripped):
+            if self._is_about_bot(text_lower):
                 score += 0.1
                 reasons.append("context_about_bot")
             else:
-                # Слово "пёс" но не про бота
                 score -= 0.15
                 reasons.append("dog_word_not_about_bot")
-
-        # 3f. Общие вопросы в чат — слабый сигнал
-        if self._is_general_question(text_stripped):
-            score -= 0.1
-            reasons.append("general_question")
 
         # Clamp
         score = max(0.0, min(1.0, score))
@@ -250,24 +208,27 @@ class TriggerSystem:
         """
         text_lower = text.lower()
 
-        if self._matches_patterns(text_lower, SILENCE_PATTERNS):
-            return "silence"
+        silence_patterns = [
+            r'(заткнись|замолчи|помолчи|тише|хватит|стоп|не\s+лезь|отвали|уйди)',
+        ]
+        for p in silence_patterns:
+            if re.search(p, text_lower):
+                return "silence"
 
-        if self._matches_patterns(text_lower, MENTION_ONLY_PATTERNS):
+        if re.search(r'отвечай\s+только\s+если\s+позвали', text_lower):
             return "mention_only"
 
-        if self._matches_patterns(text_lower, MORE_ACTIVE_PATTERNS):
+        if re.search(r'(будь\s+поактивнее|включайся\s+чаще|активнее|оживи|разговорись)', text_lower):
             return "more_active"
 
-        if self._matches_patterns(text_lower, LESS_ACTIVE_PATTERNS):
+        if re.search(r'(сбавь|поубавь|тише|меньше\s+пиши|реже\s+отвечай)', text_lower):
             return "less_active"
 
         return "normal"
 
     def is_behavior_control(self, text: str) -> bool:
         """Это управление поведением бота?"""
-        intent = self.classify_intent(text)
-        return intent != "normal"
+        return self.classify_intent(text) != "normal"
 
     def get_behavior_action(self, text: str) -> str | None:
         """Какое действие нужно выполнить."""
@@ -278,38 +239,25 @@ class TriggerSystem:
     def _score_mention(self, text: str) -> float:
         """Оценить @mention."""
         mentions = re.findall(r'@(\w+)', text)
+        all_names = self.get_all_names_for_chat(0)  # Check all known names
         for m in mentions:
-            if m.lower() in ALL_BOT_NAMES or m.lower() in {"psina_bot", "psina"}:
+            if m.lower() in all_names or m.lower() in {"psina_bot", "psina"}:
                 return 0.5
         return 0.0
 
-    def _is_about_bot(self, text: str) -> bool:
-        """
-        Проверить — текст про бота или про собак/псов вообще.
-        """
-        text_lower = text.lower()
-
-        # Если есть контекстные маркеры обращения — это про бота
+    def _is_about_bot(self, text_lower: str) -> bool:
+        """Текст про бота или про собак/псов вообще."""
         if any(p in text_lower for p in [", псина", ", пес", ", пёс", "псина,", "пес,", "пёс,"]):
             return True
-
-        # Если это команда/вопрос к боту
         if text_lower.startswith(("псина", "пес", "пёс")):
             return True
-
-        # Если просто "пёс/пес" без контекста обращения — скорее всего не про бота
-        if GENERIC_DOG_WORDS.search(text_lower):
-            # Проверяем — есть ли рядом слова обращения
-            if any(w in text_lower for w in ["скажи", "расскажи", "помоги", "знаешь", "что думаешь"]):
-                return True
-            return False
-
+        if any(w in text_lower for w in ["скажи", "расскажи", "помоги", "знаешь", "что думаешь"]):
+            return True
         return False
 
     def _is_general_question(self, text: str) -> bool:
-        """Это общий вопрос в чат (не к боту)?"""
+        """Общий вопрос в чат (не к боту)?"""
         text_lower = text.lower()
-        # Общие вопросы без адреса
         if text_lower.startswith(("кто-нибудь", "кто нибудь", "кто-то", "есть кто")):
             return True
         if any(w in text_lower for w in ["кто-нибудь", "кто нибудь", "народ", "ребят"]):
@@ -317,12 +265,9 @@ class TriggerSystem:
         return False
 
     def _score_session_continuation(self, text: str) -> float:
-        """
-        Оценить — это продолжение диалога с ботом?
-        """
+        """Оценить — это продолжение диалога с ботом?"""
         text_lower = text.lower().strip()
 
-        # Короткие ответы — высокая вероятность продолжения
         short_answers = [
             "да", "нет", "ага", "неа", "конечно", "точно", "не знаю",
             "может", "спасибо", "ок", "окей", "понял", "ясно",
@@ -331,11 +276,9 @@ class TriggerSystem:
         if text_lower in short_answers:
             return 0.85
 
-        # Ответы с местоимением "ты" — обращаются к боту
         if re.search(r'\b(ты|тебе|тобой|твой|твоя|твоё)\b', text_lower):
             return 0.8
 
-        # Прямые обращения "молчи", "почему молчишь", "где ты", "ау" и т.д.
         session_signals = [
             r'(почему|хули|чё|что|где)\s*(ты\s+)?(молчи|молчишь|затих|замолк)',
             r'(ау|алло|хелло|эй|hey)\s*$',
@@ -350,15 +293,12 @@ class TriggerSystem:
             if re.search(pattern, text_lower):
                 return 0.75
 
-        # Логическая связка с предыдущим ответом
         if text_lower.startswith(("а ", "но ", "и ", "так ", "ладно ", "ну ")):
             return 0.6
 
-        # Короткие сообщения в сессии — скорее всего продолжение
         if len(text) < 50:
             return 0.55
 
-        # Длинное сообщение без адреса — но всё ещё в сессии
         if len(text) > 100:
             return 0.35
 

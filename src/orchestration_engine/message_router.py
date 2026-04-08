@@ -107,6 +107,7 @@ class MessageRouter:
             is_reply=msg.reply_to_message_id is not None,
             reply_to_bot=is_reply_to_bot,
             in_active_session=in_session,
+            chat_id=msg.chat_id,
         )
 
         # 4. Session continuation check

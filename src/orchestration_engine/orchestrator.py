@@ -8,6 +8,7 @@ Orchestrator — центральный мозг Псины.
 """
 
 import enum
+import re
 from datetime import datetime, timezone
 
 import structlog
@@ -111,6 +112,15 @@ class Orchestrator:
         context = context_tracker.get_context_for_message(msg)
         vibe_adapter.analyze_message(msg.chat_id, msg.text)
 
+        # Learn new nicknames: if user calls bot by a name that's not in known list,
+        # but it looks like a call (name at start of message), learn it
+        text_stripped = msg.text.strip().split()[0].lower().rstrip(".,!?:") if msg.text.strip() else ""
+        known_names = trigger_system.get_all_names_for_chat(msg.chat_id)
+        if text_stripped and text_stripped not in known_names and len(text_stripped) >= 2:
+            # Check if this is actually a call pattern: "Бобик, ..." or "Бобик ..."
+            if re.match(rf'^{re.escape(text_stripped)}[,\s:!?]', msg.text, re.IGNORECASE):
+                trigger_system.learn_nickname(msg.chat_id, text_stripped)
+
         # 2. Сохраняем в память
         await self.memory_engine.ingest_message(msg)
 
@@ -172,6 +182,7 @@ class Orchestrator:
                 is_reply=msg.reply_to_message_id is not None,
                 reply_to_bot=False,
                 in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
+                chat_id=msg.chat_id,
             )
             if trigger.level == ConfidenceLevel.HIGH:
                 censorship_manager.set_level(msg.chat_id, new_censorship)
@@ -209,6 +220,7 @@ class Orchestrator:
                 is_reply=msg.reply_to_message_id is not None,
                 reply_to_bot=False,
                 in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
+                chat_id=msg.chat_id,
             )
             if trigger.level == ConfidenceLevel.HIGH or msg.is_private:
                 search_response = await search_processor.search_and_answer(search_intent.query)
@@ -256,6 +268,7 @@ class Orchestrator:
             is_reply=msg.reply_to_message_id is not None,
             reply_to_bot=False,
             in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
+            chat_id=msg.chat_id,
         )
 
         if trigger.level != ConfidenceLevel.HIGH:
@@ -505,6 +518,7 @@ class Orchestrator:
             is_reply=msg.reply_to_message_id is not None,
             reply_to_bot=True,  # Treat as direct call since user expects response
             in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
+            chat_id=msg.chat_id,
         )
         return RoutingDecision(
             route=MessageRoute.DIRECT_CALL,
