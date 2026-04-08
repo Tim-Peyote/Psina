@@ -36,14 +36,14 @@ async def _reply(message: Message, text: str, reply_to: int | None = None) -> No
 
 async def _try_react(message: Message, bot, normalized: "NormalizedMessage") -> None:
     """Попытаться поставить реакцию на сообщение."""
-    from aiogram.types import ReactAction
+    from aiogram.types import ReactionTypeEmoji
     emoji = reaction_engine.should_react(normalized)
     if emoji:
         try:
             await bot.set_message_reaction(
                 chat_id=message.chat.id,
                 message_id=message.message_id,
-                reaction=[ReactAction(emoji=emoji)],
+                reaction=[ReactionTypeEmoji(emoji=emoji)],
             )
             logger.debug("Reaction set", emoji=emoji, message_id=message.message_id)
         except Exception:
