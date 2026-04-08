@@ -3,11 +3,13 @@ import structlog
 
 from aiogram.types import Message
 
+# MUST be first: register LLM providers before anything else uses them
+from src.llm_adapter import registry  # noqa: F401
+
 from src.config import settings
 from src.telegram_gateway.bot import BotManager
 from src.telegram_gateway.router import GatewayRouter
 from src.database.session import async_session_factory
-from src.llm_adapter import registry  # noqa: F401 — register providers
 
 structlog.configure(
     processors=[
