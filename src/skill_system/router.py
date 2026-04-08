@@ -84,9 +84,32 @@ class SkillRouter:
         active_skills = await skill_state_manager.get_all_active_skills(msg.chat_id)
         if active_skills:
             # If user is already in a skill session, keep them there
-            # unless they explicitly exit
+            # unless they explicitly exit or the message is clearly not about the skill
             text_lower = msg.text.lower()
-            if any(w in text_lower for w in ["выйти из игры", "выйти из скилла", "stop skill", "/noskill"]):
+
+            # Wide exit conditions — user wants to leave skill session
+            exit_phrases = [
+                # Direct exit commands
+                "выйти из игры", "выйти из скилла", "stop skill", "/noskill",
+                # Close/stop
+                "закрой игру", "закрой сессию", "закрой скилл", "закрой игру",
+                "останови игру", "стоп игра", "стоп сессия", "стоп скилл",
+                "хватит играть", "хватит в игры", "хватит рпг",
+                # Not playing
+                "не играю", "не играем", "мы не играем", "не хочу играть",
+                "я не зову тебя играть", "это не игра", "это не рпг",
+                "не мешай", "не мешай нам", "не лезь",
+                # Shut up / silence (in context of skill session)
+                "заткнись", "замолчи", "замолкай", "заткнись нахуй",
+                # General frustration about skill being wrong
+                "ты не для игр", "ты создан не для", "убери игру",
+                "уйди из режима", "выйди из режима", "выйди из игры",
+            ]
+            if any(w in text_lower for w in exit_phrases):
+                # Deactivate ALL active skills for this chat
+                for slug in active_skills:
+                    await self.deactivate_skill(msg.chat_id, slug)
+                logger.info("Skill session exited by user", skills=active_skills, chat_id=msg.chat_id)
                 return SkillDecision.no_skill()
 
             # Continue active skill

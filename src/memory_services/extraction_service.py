@@ -52,21 +52,21 @@ EXTRACTION_PROMPT = """Ты — система памяти умного Telegra
 
 Ответь СТРОГО в формате JSON:
 ```json
-{
+{{
   "items": [
-    {
+    {{
       "type": "fact|preference|relation|topic|event|plan|group_rule|user_trait|joke",
       "content": "краткое описание факта",
       "user_id": 12345 или null,
       "confidence": 0.0-1.0,
       "tags": ["тег1", "тег2"],
       "ttl_seconds": 86400 или null для постоянных
-    }
+    }}
   ],
   "topics": ["основные темы разговора"],
   "summary": "краткое содержание диалога в 2-3 предложениях",
   "key_events": ["важные события из диалога"]
-}
+}}
 ```
 
 Диалог:

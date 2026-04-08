@@ -59,6 +59,9 @@ class SkillRegistry:
         # Sync file-based skills to DB so the router can find them
         await self._sync_file_skills_to_db()
 
+        # Cleanup stale SkillState entries from old naming conventions
+        await self._cleanup_stale_skill_state()
+
     async def _sync_file_skills_to_db(self) -> None:
         """Ensure all file-based skills are registered in the database."""
         for slug, meta in self._discovered.items():
@@ -148,6 +151,29 @@ class SkillRegistry:
                         await session.delete(dash_skill)
 
             await session.commit()
+
+    async def _cleanup_stale_skill_state(self) -> None:
+        """Deactivate ALL active SkillState entries at startup.
+
+        This ensures users don't get stuck in broken/stale skill sessions
+        from previous deployments. Users can re-activate skills when needed.
+        """
+        from src.database.models import SkillState
+
+        async for session in get_session():
+            stmt = select(SkillState).where(SkillState.is_active == True)
+            result = await session.execute(stmt)
+            active_states = list(result.scalars().all())
+
+            if not active_states:
+                return
+
+            for state in active_states:
+                state.is_active = False
+                logger.info("Deactivated skill session at startup", slug=state.skill_slug, chat_id=state.chat_id)
+
+            await session.commit()
+            logger.info("All active skill sessions cleared at startup", count=len(active_states))
 
     def _get_default_triggers(self, slug: str) -> list[str]:
         """Default triggers for known skills."""
