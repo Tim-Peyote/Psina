@@ -121,7 +121,9 @@ class ContextPackBuilder:
         return pack
 
     async def _get_recent_messages(self, chat_id: int) -> list[dict]:
-        """Get recent messages from the chat."""
+        """Get recent messages from the chat, resolving author names."""
+        from src.database.models import UserProfile
+
         async for session in get_session():
             stmt = (
                 select(Message)
@@ -135,11 +137,28 @@ class ContextPackBuilder:
         # Reverse to chronological order
         messages.reverse()
 
+        # Collect user IDs to resolve names
+        user_ids = {m.user_id for m in messages if m.user_id and m.user_id > 0}
+
+        # Resolve names from user_profiles
+        user_names: dict[int, str] = {}
+        if user_ids:
+            stmt = select(UserProfile).where(
+                UserProfile.chat_id == chat_id,
+                UserProfile.user_id.in_(user_ids),
+            )
+            result = await session.execute(stmt)
+            profiles = list(result.scalars().all())
+            for p in profiles:
+                name = p.display_name or f"user_{p.user_id}"
+                user_names[p.user_id] = name
+
         return [
             {
                 "user_id": m.user_id,
                 "text": m.text,
                 "role": m.role.value if hasattr(m.role, "value") else str(m.role),
+                "author": user_names.get(m.user_id, "") if m.user_id and m.user_id > 0 else "бот",
             }
             for m in messages
         ]
@@ -305,11 +324,18 @@ class ContextPackBuilder:
         # Add recent messages
         for msg in pack.recent_messages:
             role = msg.get("role", "user")
-            author = f"user_{msg.get('user_id', '?')}"
-            messages.append({
-                "role": "user" if role == "user" else "assistant",
-                "content": f"[{author}]: {msg.get('text', '')}",
-            })
+            author = msg.get("author", "")
+            if not author:
+                # No name known — just show the text
+                messages.append({
+                    "role": "user" if role == "user" else "assistant",
+                    "content": msg.get("text", ""),
+                })
+            else:
+                messages.append({
+                    "role": "user" if role == "user" else "assistant",
+                    "content": f"[{author}]: {msg.get('text', '')}",
+                })
 
         return messages
 

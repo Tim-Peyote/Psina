@@ -280,10 +280,12 @@ class Orchestrator:
         time_str = remind_at.strftime("%d.%m.%Y в %H:%M")
         target_text = ""
         if target_user_id:
-            from src.context_tracker.tracker import context_tracker
             names = context_tracker.get_participant_names(msg.chat_id)
-            target_name = names.get(target_user_id, f"user_{target_user_id}")
-            target_text = f" для {target_name}"
+            target_name = names.get(target_user_id)
+            if target_name:
+                target_text = f" для @{target_name}"
+            else:
+                target_text = f" для user_{target_user_id}"
 
         return f"📝 Запомнил! Напомню{target_text} {time_str}: {content}"
 

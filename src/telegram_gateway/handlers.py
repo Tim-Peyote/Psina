@@ -30,7 +30,31 @@ orchestrator = Orchestrator()
 
 async def _reply(message: Message, text: str, reply_to: int | None = None) -> None:
     """Отправить ответ и зарегистрировать ID для reply detection."""
-    sent = await message.answer(text, reply_to_message_id=reply_to)
+    # Parse @mentions in text and convert them to Telegram HTML mentions
+    # This way @username becomes a clickable mention link
+    import re
+    from src.context_tracker.tracker import context_tracker
+
+    # Find @username patterns and convert to Telegram HTML mentions
+    def convert_mentions(t):
+        """Convert @username to HTML mention if we know the user_id."""
+        def replace_mention(match):
+            username = match.group(1)
+            user_id = context_tracker.resolve_name(username)
+            if user_id:
+                return f'<a href="tg://user?id={user_id}">@{username}</a>'
+            # If we don't know the user, keep as plain @username
+            return match.group(0)
+
+        return re.sub(r'@(\w+)', replace_mention, t)
+
+    formatted_text = convert_mentions(text)
+
+    sent = await message.answer(
+        formatted_text,
+        reply_to_message_id=reply_to,
+        parse_mode="HTML",
+    )
     message_router.register_bot_message(sent.message_id)
 
 
