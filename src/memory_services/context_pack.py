@@ -134,47 +134,50 @@ class ContextPackBuilder:
             result = await session.execute(stmt)
             messages = list(result.scalars().all())
 
-        # Reverse to chronological order
-        messages.reverse()
+            # Reverse to chronological order
+            messages.reverse()
 
-        # Collect user IDs to resolve names
-        user_ids = {m.user_id for m in messages if m.user_id and m.user_id > 0}
+            # Collect user IDs to resolve names
+            user_ids = {m.user_id for m in messages if m.user_id and m.user_id > 0}
 
-        # Resolve names: first try user_profiles.display_name, then User.first_name/username
-        user_names: dict[int, str] = {}
+            # Resolve names: first try user_profiles.display_name, then User.first_name/username
+            user_names: dict[int, str] = {}
 
-        # From user_profiles
-        if user_ids:
-            stmt = select(UserProfile).where(
-                UserProfile.chat_id == chat_id,
-                UserProfile.user_id.in_(user_ids),
-            )
-            result = await session.execute(stmt)
-            profiles = list(result.scalars().all())
-            for p in profiles:
-                if p.display_name:
-                    user_names[p.user_id] = p.display_name
+            # From user_profiles
+            if user_ids:
+                stmt = select(UserProfile).where(
+                    UserProfile.chat_id == chat_id,
+                    UserProfile.user_id.in_(user_ids),
+                )
+                result = await session.execute(stmt)
+                profiles = list(result.scalars().all())
+                for p in profiles:
+                    if p.display_name:
+                        user_names[p.user_id] = p.display_name
 
-        # From User table (fallback for users without profiles)
-        missing_ids = user_ids - set(user_names.keys())
-        if missing_ids:
-            stmt = select(User).where(User.id.in_(missing_ids))
-            result = await session.execute(stmt)
-            users = list(result.scalars().all())
-            for u in users:
-                name = u.first_name or u.username
-                if name:
-                    user_names[u.id] = name
+                # From User table (fallback for users without profiles)
+                missing_ids = user_ids - set(user_names.keys())
+                if missing_ids:
+                    stmt = select(User).where(User.id.in_(missing_ids))
+                    result = await session.execute(stmt)
+                    users = list(result.scalars().all())
+                    for u in users:
+                        name = u.first_name or u.username
+                        if name:
+                            user_names[u.id] = name
 
-        return [
-            {
-                "user_id": m.user_id,
-                "text": m.text,
-                "role": m.role.value if hasattr(m.role, "value") else str(m.role),
-                "author": user_names.get(m.user_id, "") if m.user_id and m.user_id > 0 else "бот",
-            }
-            for m in messages
-        ]
+            # Return within the session context
+            return [
+                {
+                    "user_id": m.user_id,
+                    "text": m.text,
+                    "role": m.role.value if hasattr(m.role, "value") else str(m.role),
+                    "author": user_names.get(m.user_id, "") if m.user_id and m.user_id > 0 else "бот",
+                }
+                for m in messages
+            ]
+
+        return []
 
     async def _get_session_summary(self, chat_id: int) -> str:
         """Get the most recent session summary."""
