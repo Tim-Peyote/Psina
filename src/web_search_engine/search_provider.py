@@ -6,6 +6,7 @@ Search Providers — абстракция и реализации для веб-
 - Mock (для разработки)
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -48,11 +49,23 @@ class DuckDuckGoProvider(BaseSearchProvider):
         from duckduckgo_search import DDGS
         self._ddgs = DDGS()
 
+    def _recreate_ddgs(self) -> None:
+        """Пересоздать DDGS instance при ошибке."""
+        try:
+            from duckduckgo_search import DDGS
+            self._ddgs = DDGS()
+            logger.debug("DDGS instance recreated")
+        except Exception:
+            logger.exception("Failed to recreate DDGS")
+
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
         max_results = min(max_results, settings.web_search_max_results)
 
         try:
-            results = self._ddgs.text(query, max_results=max_results)
+            # Синхронный вызов в отдельном потоке чтобы не блокировать event loop
+            results = await asyncio.to_thread(
+                self._ddgs.text, query, max_results=max_results
+            )
 
             search_results = []
             for r in results:
@@ -63,12 +76,33 @@ class DuckDuckGoProvider(BaseSearchProvider):
                     source="DuckDuckGo",
                 ))
 
-            logger.debug("DuckDuckGo search completed", query=query, results=len(search_results))
+            logger.info("DuckDuckGo search completed", query=query, results=len(search_results))
             return search_results
 
         except Exception as e:
-            logger.error("DuckDuckGo search failed", query=query, error=str(e))
-            return []
+            logger.warning("DuckDuckGo search failed, retrying", query=query, error=str(e))
+            # Пересоздаём инстанс и пробуем ещё раз
+            try:
+                self._recreate_ddgs()
+                results = await asyncio.to_thread(
+                    self._ddgs.text, query, max_results=max_results
+                )
+
+                search_results = []
+                for r in results:
+                    search_results.append(SearchResult(
+                        title=r.get("title", ""),
+                        url=r.get("href", ""),
+                        snippet=r.get("body", ""),
+                        source="DuckDuckGo",
+                    ))
+
+                logger.info("DuckDuckGo search completed after retry", query=query, results=len(search_results))
+                return search_results
+
+            except Exception as e2:
+                logger.error("DuckDuckGo search failed completely", query=query, error=str(e2))
+                return []
 
     def get_name(self) -> str:
         return "DuckDuckGo"

@@ -127,7 +127,7 @@ async def handle_start(message: Message) -> None:
     """Команда /start."""
     logger.info("User started bot", user_id=message.from_user.id if message.from_user else None)
     await _reply(message,
-        f"🐾 Привет! Я <b>{settings.bot_name}</b>.\n\n"
+        f"Привет! Я <b>{settings.bot_name}</b>.\n\n"
         f"Я — живой участник чата. Слушаю, запоминаю, отвечаю когда нужно.\n\n"
         f"Позови меня по имени — и я приду. А без дела не лезу 🤫\n\n"
         f"Используй /help, чтобы узнать что я умею."
@@ -425,7 +425,7 @@ async def bot_added_to_chat(event: ChatMemberUpdated) -> None:
     logger.info("Bot added to chat", chat_id=chat.id, chat_type=chat.type)
 
     welcome_text = (
-        f"🐾 Привет! Я <b>{settings.bot_name}</b>!\n\n"
+        f"Привет! Я <b>{settings.bot_name}</b>!\n\n"
         f"Я — живой участник чата. Слушаю, запоминаю, отвечаю когда позовут.\n\n"
         f"<b>Что умею:</b>\n"
         f"• Запоминаю кто что любит, где работает, чем увлекается\n"
@@ -437,7 +437,7 @@ async def bot_added_to_chat(event: ChatMemberUpdated) -> None:
         f"• Позови: «{settings.bot_name}, ...» или «{settings.bot_aliases[0]}, ...»\n"
         f"• Или просто ответь на моё сообщение\n"
         f"• Без обращения — не лезу, уважаю чужие разговоры\n\n"
-        f"Используй /help для списка команд 🐕"
+        f"Используй /help для списка команд"
     )
 
     try:

@@ -20,11 +20,12 @@ class MockProvider(BaseLLMProvider):
             if msg.get("role") == "user":
                 last_user = msg.get("content", "")
                 break
-        return f"[Mock] Я получил твоё сообщение: «{last_user[:100]}». Сейчас я в режиме разработки."
+        # Return empty string — bot stays silent rather than sending mock garbage
+        return ""
 
     async def summarize(self, texts: list[str], max_tokens: int = 500) -> str:
         logger.debug("MockProvider summarize", count=len(texts))
-        return f"[Mock] Сводка из {len(texts)} сообщений. (Mock режим)"
+        return "Не могу сейчас обработать."
 
     async def extract_facts(self, text: str) -> list[str]:
         logger.debug("MockProvider extract_facts")

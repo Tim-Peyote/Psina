@@ -30,6 +30,8 @@ class SearchProcessor:
         """
         Выполнить поиск и сформировать ответ через LLM.
         """
+        logger.info("Search requested", query=query)
+
         # Проверяем кеш
         cached = search_cache.get(query)
         if cached:
@@ -39,12 +41,15 @@ class SearchProcessor:
         # Проверяем лимиты
         if not settings.web_search_unlimited:
             if not self._check_limits():
+                logger.warning("Search rate limit exceeded", query=query)
                 return "Извини, я исчерпал лимит поиска на сегодня. Попробуй позже."
 
         # Ищем
+        logger.debug("Executing web search", query=query, provider=search_provider.get_name())
         results = await search_provider.search(query, max_results=settings.web_search_max_results)
 
         if not results:
+            logger.info("No search results found", query=query)
             return f"Не нашёл ничего по запросу «{query}». Попробуй переформулировать."
 
         # Кеш
@@ -54,6 +59,7 @@ class SearchProcessor:
         self._record_usage()
 
         # Формируем ответ
+        logger.debug("Generating LLM answer from search results", query=query, results_count=len(results))
         return await self._generate_answer(query, results)
 
     async def _generate_answer(self, query: str, results: list[SearchResult]) -> str:
@@ -68,11 +74,11 @@ class SearchProcessor:
         search_context = "\n\n".join(context_parts)
 
         system_prompt = (
-            "Ты — Псина, умный пёс и участник чата. "
+            "Ты — Псина, участник чата. "
             "Тебе дали результаты поиска по запросу пользователя. "
             "Ответь кратко и по делу, используя эти результаты. "
             "Если результаты противоречивы — скажи об этом. "
-            "В конце укажи источник(и) — DuckDuckGo. "
+            "В конце укажи источник(ы) — DuckDuckGo. "
             "НЕ выдумывай информацию которой нет в результатах поиска."
         )
 

@@ -99,20 +99,23 @@ class SearchIntentDetector:
             if match:
                 # Извлекаем query из группы или всего текста
                 query = match.group(1) if match.lastindex else text.strip()
-                if len(query) > base_score:
-                    base_score = min(base_score, 0.95)
 
                 if base_score > best_score:
                     best_score = base_score
                     best_query = query
                     best_reason = reason
 
-        return SearchIntent(
+        result = SearchIntent(
             is_search_needed=best_score >= 0.7,
             confidence=best_score,
             query=best_query,
             reason=best_reason,
         )
+
+        if result.is_search_needed:
+            logger.debug("Search intent detected", text=text[:80], confidence=best_score, query=best_query, reason=best_reason)
+
+        return result
 
 
 search_intent_detector = SearchIntentDetector()
