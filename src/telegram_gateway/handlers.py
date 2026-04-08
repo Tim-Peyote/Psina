@@ -5,9 +5,13 @@ Telegram handlers — обработка команд и сообщений.
 который сам решает — отвечать или нет.
 """
 
+import asyncio
+import random
+
 import structlog
 
 from aiogram import F, Router as AiogramRouter
+from aiogram.enums import ChatAction
 from aiogram.types import Message, ChatMemberUpdated
 from aiogram.filters import Command, CommandStart, CommandObject, IS_NOT_MEMBER, IS_MEMBER
 from aiogram.filters.chat_member_updated import ChatMemberUpdatedFilter
@@ -15,6 +19,7 @@ from aiogram.filters.chat_member_updated import ChatMemberUpdatedFilter
 from src.config import settings
 from src.message_processor.processor import NormalizedMessage
 from src.orchestration_engine.orchestrator import Orchestrator
+from src.utils.sanitize import truncate_message
 from src.orchestration_engine.session_manager import session_manager
 from src.orchestration_engine.censorship_manager import censorship_manager, CensorshipLevel
 from src.orchestration_engine.vibe_adapter import vibe_adapter
@@ -30,20 +35,20 @@ orchestrator = Orchestrator()
 
 async def _reply(message: Message, text: str, reply_to: int | None = None) -> None:
     """Отправить ответ и зарегистрировать ID для reply detection."""
-    # Parse @mentions in text and convert them to Telegram HTML mentions
-    # This way @username becomes a clickable mention link
     import re
     from src.context_tracker.tracker import context_tracker
 
-    # Find @username patterns and convert to Telegram HTML mentions
     def convert_mentions(t):
-        """Convert @username to HTML mention if we know the user_id."""
+        """Convert @username to HTML mention if we know the user_id.
+
+        Falls back to DB lookup via context_tracker.resolve_name().
+        """
         def replace_mention(match):
             username = match.group(1)
             user_id = context_tracker.resolve_name(username)
             if user_id:
                 return f'<a href="tg://user?id={user_id}">@{username}</a>'
-            # If we don't know the user, keep as plain @username
+            logger.debug("Unresolved mention", username=username, chat_id=message.chat.id)
             return match.group(0)
 
         return re.sub(r'@(\w+)', replace_mention, t)
@@ -76,7 +81,10 @@ async def _try_react(message: Message, bot, normalized: "NormalizedMessage") -> 
 
 def _normalize_message(msg: Message) -> NormalizedMessage:
     """Нормализовать aiogram Message в NormalizedMessage."""
-    text = msg.text or msg.caption or ""
+    raw_text = msg.text or msg.caption or ""
+    text = truncate_message(raw_text)
+    if len(raw_text) > len(text):
+        logger.info("Message truncated", original_len=len(raw_text), truncated_len=len(text))
     chat_type = msg.chat.type if isinstance(msg.chat.type, str) else "private"
 
     is_command = text.startswith("/")
@@ -341,6 +349,48 @@ async def handle_search(message: Message, command: CommandObject) -> None:
     await _reply(message, result)
 
 
+async def _send_with_typing(message: Message, response: str, reply_to: int | None = None) -> None:
+    """Send response with natural typing simulation and optional message splitting."""
+    bot = message.bot
+
+    # Show typing indicator
+    if bot:
+        try:
+            await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+        except Exception:
+            pass
+
+    # Natural delay: 1-3 seconds based on response length
+    delay = min(1.0 + len(response) / 500, 3.0) + random.uniform(0, 0.5)
+    await asyncio.sleep(delay)
+
+    # Decide if we should split into multiple messages
+    # Split on double newlines if response is long enough and random chance
+    parts = []
+    if len(response) > 200 and random.random() < 0.3:
+        # Try splitting on double newline
+        chunks = response.split("\n\n", 2)
+        if len(chunks) >= 2 and all(len(c.strip()) > 20 for c in chunks[:2]):
+            parts = [c.strip() for c in chunks if c.strip()]
+        else:
+            parts = [response]
+    else:
+        parts = [response]
+
+    # Send first part as reply
+    await _reply(message, parts[0], reply_to=reply_to)
+
+    # Send remaining parts with small delays
+    for part in parts[1:]:
+        if bot:
+            try:
+                await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+            except Exception:
+                pass
+        await asyncio.sleep(random.uniform(0.8, 2.0))
+        await _reply(message, part)
+
+
 @router.message(F.text)
 async def handle_message(message: Message) -> None:
     """Все текстовые сообщения → через orchestrator."""
@@ -362,8 +412,7 @@ async def handle_message(message: Message) -> None:
     response = await orchestrator.process_message(normalized)
     logger.debug("Orchestrator response", has_response=bool(response), response_text=(response or "")[:200])
     if response:
-        # Отвечаем reply на сообщение пользователя
-        await _reply(message, response, reply_to=message.message_id)
+        await _send_with_typing(message, response, reply_to=message.message_id)
         logger.info("Response sent", response_text=response[:100])
     else:
         logger.info("No response generated", chat_id=message.chat.id)

@@ -6,11 +6,13 @@
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 import random
 
 import structlog
 
 from src.config import settings
+from src.utils.sanitize import sanitize_for_prompt
 
 logger = structlog.get_logger()
 
@@ -239,6 +241,67 @@ class PsinaPersonality:
 
         return "normal"
 
+    # ===== ПРАЗДНИКИ =====
+    _HOLIDAYS: dict[tuple[int, int], str] = {
+        (1, 1): "Новый Год",
+        (1, 7): "Рождество",
+        (2, 14): "День святого Валентина",
+        (2, 23): "День защитника Отечества",
+        (3, 8): "Международный женский день",
+        (5, 1): "Праздник Весны и Труда",
+        (5, 9): "День Победы",
+        (6, 12): "День России",
+        (11, 4): "День народного единства",
+        (12, 31): "Канун Нового Года",
+    }
+
+    _DAY_NAMES = {
+        0: "Понедельник",
+        1: "Вторник",
+        2: "Среда",
+        3: "Четверг",
+        4: "Пятница",
+        5: "Суббота",
+        6: "Воскресенье",
+    }
+
+    def _get_time_context(self) -> str:
+        """Build time-awareness block for system prompt."""
+        # UTC+3 (Moscow) by default, could be configurable
+        now = datetime.now(timezone(timedelta(hours=3)))
+        hour = now.hour
+        weekday = now.weekday()
+        day_name = self._DAY_NAMES[weekday]
+
+        # Time of day
+        if 5 <= hour < 12:
+            period = "утро"
+            mood_hint = "Бодрое начало дня."
+        elif 12 <= hour < 18:
+            period = "день"
+            mood_hint = "Середина дня, рабочий ритм."
+        elif 18 <= hour < 23:
+            period = "вечер"
+            mood_hint = "Вечер, все расслабляются."
+        else:
+            period = "ночь"
+            mood_hint = "Поздняя ночь, отвечай коротко и тихо."
+
+        # Weekend awareness
+        if weekday >= 5:
+            mood_hint += " Выходной — можно расслабиться, пошутить."
+        elif weekday == 0:
+            mood_hint += " Понедельник — сочувствуй если кто жалуется."
+
+        parts = [f"ВРЕМЯ: {day_name}, {hour:02d}:{now.minute:02d} ({period}). {mood_hint}"]
+
+        # Holiday check
+        holiday = self._HOLIDAYS.get((now.month, now.day))
+        if holiday:
+            parts.append(f"Сегодня {holiday}! Можешь поздравить если уместно.")
+
+        return "\n".join(parts) + "\n\n"
+
     def get_system_prompt(
         self,
         context: dict | None = None,
@@ -326,30 +389,52 @@ class PsinaPersonality:
         elif activity_level == "high":
             prompt += "РЕЖИМ: Повышенная активность. Можешь иногда вклиниваться.\n\n"
 
+        # Осознание времени
+        prompt += self._get_time_context()
+
         # Контекст
         if context:
             participants = context.get("participants", [])
             if participants:
-                names = []
+                entries = []
                 for p in participants:
-                    uid = p.get("user_id", "?")
-                    name = p.get("first_name") or p.get("username") or f"user_{uid}"
-                    names.append(name)
-                prompt += f"В ЧАТЕ УЧАСТВУЮТ: {', '.join(names)}\n"
-                prompt += f"Когда обращаешься к кому-то из них — используй @username если знаешь, или просто по имени.\n\n"
+                    first = p.get("first_name")
+                    uname = p.get("username")
+                    # Show both name and @username so LLM knows how to tag
+                    if first and uname:
+                        entries.append(f"{sanitize_for_prompt(first, 50)} (@{sanitize_for_prompt(uname, 50)})")
+                    elif uname:
+                        entries.append(f"@{sanitize_for_prompt(uname, 50)}")
+                    elif first:
+                        entries.append(sanitize_for_prompt(first, 50))
+                prompt += f"В ЧАТЕ УЧАСТВУЮТ: {', '.join(entries)}\n"
+                prompt += f"Когда обращаешься к конкретному человеку — ОБЯЗАТЕЛЬНО тегай через @username. Не придумывай username — используй только те что указаны выше.\n\n"
 
             mentioned = context.get("mentioned", [])
             if mentioned:
-                names = []
+                entries = []
                 for m in mentioned:
-                    name = m.get("first_name") or m.get("username") or f"user_{m.get('user_id', '?')}"
-                    names.append(name)
-                prompt += f"ГОВОРЯТ О: {', '.join(names)}\n\n"
+                    first = m.get("first_name")
+                    uname = m.get("username")
+                    if first and uname:
+                        entries.append(f"{sanitize_for_prompt(first, 50)} (@{sanitize_for_prompt(uname, 50)})")
+                    elif uname:
+                        entries.append(f"@{sanitize_for_prompt(uname, 50)}")
+                    elif first:
+                        entries.append(sanitize_for_prompt(first, 50))
+                prompt += f"ГОВОРЯТ О: {', '.join(entries)}\n\n"
 
             reply = context.get("reply_context")
             if reply:
-                reply_author = reply.get("username") or str(reply.get("user_id", "кто-то"))
-                reply_text = reply.get("text", "")
+                reply_uname = reply.get("username")
+                reply_first = reply.get("first_name")
+                if reply_uname:
+                    reply_author = f"@{sanitize_for_prompt(reply_uname, 50)}"
+                elif reply_first:
+                    reply_author = sanitize_for_prompt(reply_first, 50)
+                else:
+                    reply_author = "кто-то"
+                reply_text = sanitize_for_prompt(reply.get("text", ""), max_length=300)
                 prompt += f"ОТВЕТ НА СООБЩЕНИЕ {reply_author}: «{reply_text}»\n\n"
 
             session_context = context.get("session_context", "")
@@ -360,8 +445,16 @@ class PsinaPersonality:
             if recent:
                 prompt += "ПОСЛЕДНИЕ СООБЩЕНИЯ:\n"
                 for m in recent[-5:]:
-                    author = m.get("username") or m.get("first_name") or "кто-то"
-                    prompt += f"  {author}: {m.get('text', '')}\n"
+                    uname = m.get("username")
+                    first = m.get("first_name")
+                    if uname:
+                        author = f"@{sanitize_for_prompt(uname, 50)}"
+                    elif first:
+                        author = sanitize_for_prompt(first, 50)
+                    else:
+                        author = "кто-то"
+                    text = sanitize_for_prompt(m.get("text", ""), max_length=500)
+                    prompt += f"  {author}: {text}\n"
                 prompt += "\n"
 
         # Knowledge context

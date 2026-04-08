@@ -6,53 +6,10 @@ from src.database.models import Chat, ChatType, Reminder
 from src.summarizer.daily import DailySummarizer
 from src.memory_engine.engine import MemoryEngine
 from src.workers.reminders import reminder_manager
+from src.workers.utils import run_async as _run_async
 from sqlalchemy import select
 
 logger = structlog.get_logger()
-
-
-def _run_async(coro):
-    """Run async code in Celery with a fresh event loop and isolated DB engine.
-
-    Celery prefork forks create new processes without event loops.
-    The module-level async engine is bound to the old (non-existent) loop.
-    We create a fresh engine inside the new loop to avoid 'different loop' errors.
-    """
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    try:
-        # Recreate the async engine inside this loop so asyncpg connections
-        # are bound to the correct event loop
-        from src.database import session as db_session
-        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-        from src.config import settings
-
-        db_session.engine = create_async_engine(
-            settings.database_url,
-            echo=False,
-            pool_size=2,
-            max_overflow=5,
-            pool_pre_ping=True,
-            pool_recycle=3600,
-        )
-        db_session.async_session_factory = async_sessionmaker(
-            db_session.engine,
-            class_=db_session.AsyncSession,
-            expire_on_commit=False,
-        )
-
-        result = loop.run_until_complete(coro)
-
-        # Cleanup: close the engine
-        async def _close():
-            await db_session.engine.dispose()
-        loop.run_until_complete(_close())
-
-        return result
-    finally:
-        loop.close()
 
 
 @shared_task(name="src.workers.tasks.generate_daily_summaries")
@@ -150,6 +107,44 @@ def check_reminders() -> None:
             await bot.session.close()
 
     _run_async(_send_reminders())
+
+
+@shared_task(name="src.workers.tasks.send_proactive_messages")
+def send_proactive_messages() -> None:
+    """Check all active chats and send proactive messages where appropriate."""
+    from aiogram import Bot
+    from src.orchestration_engine.proactive_engine import proactive_engine
+    from src.database.models import Chat, ChatType
+
+    with sync_session_factory() as session:
+        stmt = select(Chat).where(
+            Chat.type.in_([ChatType.GROUP, ChatType.SUPERGROUP])
+        )
+        result = session.execute(stmt)
+        chats = list(result.scalars().all())
+
+    if not chats:
+        return
+
+    async def _run():
+        bot = Bot(token=settings.telegram_bot_token)
+        try:
+            for chat in chats:
+                try:
+                    msg = await proactive_engine.check_chat(chat.id)
+                    if msg:
+                        await bot.send_message(
+                            chat_id=chat.id,
+                            text=msg,
+                            parse_mode="HTML",
+                        )
+                        logger.info("Proactive message sent", chat_id=chat.id, text=msg[:50])
+                except Exception:
+                    logger.debug("Proactive check failed", chat_id=chat.id, exc_info=True)
+        finally:
+            await bot.session.close()
+
+    _run_async(_run())
 
 
 @shared_task(name="src.workers.tasks.update_user_profiles")

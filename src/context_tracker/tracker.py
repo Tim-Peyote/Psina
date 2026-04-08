@@ -104,20 +104,8 @@ class ContextTracker:
         for user_id in mentioned:
             thread.add_mentioned_user(user_id)
 
-        # Обновляем мапу имён
-        if msg.username:
-            if msg.username not in self._name_to_user:
-                self._name_to_user[msg.username] = msg.user_id
-            if msg.user_id not in self._user_aliases:
-                self._user_aliases[msg.user_id] = set()
-            self._user_aliases[msg.user_id].add(msg.username)
-
-        if msg.first_name:
-            if msg.user_id not in self._user_aliases:
-                self._user_aliases[msg.user_id] = set()
-            self._user_aliases[msg.user_id].add(msg.first_name)
-            if msg.first_name not in self._name_to_user:
-                self._name_to_user[msg.first_name] = msg.user_id
+        # Обновляем мапу имён — ВСЕГДА обновляем (username мог измениться)
+        self._register_user(msg.user_id, msg.username, msg.first_name)
 
         logger.debug(
             "Context tracked",
@@ -127,6 +115,22 @@ class ContextTracker:
         )
 
         return thread
+
+    def _register_user(self, user_id: int, username: str | None, first_name: str | None) -> None:
+        """Register or update user name mappings."""
+        if user_id not in self._user_aliases:
+            self._user_aliases[user_id] = set()
+
+        if username:
+            # Always update — username can change
+            self._name_to_user[username] = user_id
+            self._name_to_user[username.lower()] = user_id
+            self._user_aliases[user_id].add(username)
+
+        if first_name:
+            self._user_aliases[user_id].add(first_name)
+            self._name_to_user[first_name] = user_id
+            self._name_to_user[first_name.lower()] = user_id
 
     def get_context_for_message(self, msg: NormalizedMessage) -> dict:
         """
@@ -221,12 +225,19 @@ class ContextTracker:
         username = None
         first_name = None
 
-        # Пытаемся найти в известных алиасах
         for alias in aliases:
-            if alias.startswith('@') or alias.islower():
+            # Usernames are latin alphanumeric, first_names usually start uppercase or Cyrillic
+            if not username and alias.isascii() and alias[0:1].islower():
                 username = alias
-            else:
-                first_name = first_name or alias
+            elif not first_name:
+                first_name = alias
+
+        # If we still don't have username, try reverse lookup in _name_to_user
+        if not username:
+            for name, uid in self._name_to_user.items():
+                if uid == user_id and name.isascii() and name[0:1].islower():
+                    username = name
+                    break
 
         return {
             "user_id": user_id,
@@ -236,9 +247,48 @@ class ContextTracker:
         }
 
     def resolve_name(self, name: str) -> int | None:
-        """Найти user_id по имени или username."""
-        name_clean = name.strip().lstrip('@')
-        return self._name_to_user.get(name_clean) or self._name_to_user.get(name)
+        """Найти user_id по имени или username. Falls back to DB."""
+        name_clean = name.strip().lstrip("@").lower()
+
+        # 1. In-memory lookup (case-insensitive)
+        uid = self._name_to_user.get(name_clean)
+        if uid:
+            return uid
+
+        # Also try original casing
+        uid = self._name_to_user.get(name.strip().lstrip("@"))
+        if uid:
+            return uid
+
+        # 2. DB fallback — query User table
+        return self._resolve_from_db(name_clean)
+
+    def _resolve_from_db(self, name: str) -> int | None:
+        """Sync DB lookup for user by username or first_name."""
+        try:
+            from src.database.session import sync_session_factory
+            with sync_session_factory() as session:
+                # Try by username first (exact)
+                stmt = select(User).where(User.username == name)
+                result = session.execute(stmt)
+                user = result.scalar_one_or_none()
+
+                if not user:
+                    # Try by first_name (case-insensitive)
+                    from sqlalchemy import func
+                    stmt = select(User).where(func.lower(User.first_name) == name.lower())
+                    result = session.execute(stmt)
+                    user = result.scalar_one_or_none()
+
+                if user:
+                    # Cache for future lookups
+                    self._register_user(user.id, user.username, user.first_name)
+                    logger.debug("Resolved user from DB", name=name, user_id=user.id)
+                    return user.id
+        except Exception:
+            logger.debug("DB resolve failed", name=name, exc_info=True)
+
+        return None
 
     def get_participant_names(self, chat_id: int) -> dict[int, str]:
         """Вернуть имена всех участников чата."""
@@ -260,6 +310,52 @@ class ContextTracker:
         if thread and thread.is_active:
             return thread
         return None
+
+    async def load_chat_users_from_db(self, chat_id: int) -> int:
+        """Load all known users for a chat from DB into in-memory cache.
+
+        Called when the tracker has no data for a chat (e.g. after restart).
+        Returns number of users loaded.
+        """
+        try:
+            from src.database.models import UserProfile
+            count = 0
+            async for session in get_session():
+                # Get all users who have profiles in this chat
+                stmt = (
+                    select(User)
+                    .join(UserProfile, User.id == UserProfile.user_id)
+                    .where(UserProfile.chat_id == chat_id)
+                )
+                result = await session.execute(stmt)
+                users = list(result.scalars().all())
+
+                for user in users:
+                    self._register_user(user.id, user.username, user.first_name)
+                    count += 1
+
+                # Also load from recent messages if profiles are sparse
+                from src.database.models import Message
+                stmt = (
+                    select(User)
+                    .join(Message, User.id == Message.user_id)
+                    .where(Message.chat_id == chat_id)
+                    .distinct()
+                )
+                result = await session.execute(stmt)
+                msg_users = list(result.scalars().all())
+
+                for user in msg_users:
+                    if user.id not in self._user_aliases:
+                        self._register_user(user.id, user.username, user.first_name)
+                        count += 1
+
+            if count:
+                logger.info("Loaded chat users from DB", chat_id=chat_id, count=count)
+            return count
+        except Exception:
+            logger.debug("Failed to load chat users from DB", chat_id=chat_id, exc_info=True)
+            return 0
 
 
 # Singleton

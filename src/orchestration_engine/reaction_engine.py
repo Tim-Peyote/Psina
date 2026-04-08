@@ -15,6 +15,7 @@ Reaction Engine — контекстные реакции Псины на соо
 Не спамит: cooldown, max 1 реакция, только когда реально есть причина.
 """
 
+import random
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -32,7 +33,8 @@ class ReactionEngine:
 
     def __init__(self) -> None:
         self._last_reaction: dict[int, datetime] = {}
-        self._cooldown_seconds = 20  # уменьшено с 60 для более частых реакций
+        self._cooldown_seconds = 10  # реакции дешёвые, можно чаще
+        self._reaction_probability = 0.4  # 40% шанс реакции даже при совпадении
 
         self._reaction_patterns: dict[str, list[str]] = {
             "❤️": [
@@ -127,6 +129,10 @@ class ReactionEngine:
         for emoji, patterns in self._reaction_patterns.items():
             for pattern in patterns:
                 if re.search(pattern, text, re.IGNORECASE):
+                    # Probabilistic reaction — not every match triggers
+                    if random.random() > self._reaction_probability:
+                        logger.debug("Reaction skipped (probability)", emoji=emoji)
+                        return None
                     self._last_reaction[msg.chat_id] = datetime.now(timezone.utc)
                     logger.debug("Reaction chosen", emoji=emoji, chat_id=msg.chat_id)
                     return emoji

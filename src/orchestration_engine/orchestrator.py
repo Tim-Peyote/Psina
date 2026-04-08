@@ -32,6 +32,7 @@ from src.orchestration_engine.knowledge_analyzer import knowledge_analyzer
 from src.orchestration_engine.vibe_adapter import vibe_adapter
 from src.orchestration_engine.censorship_manager import censorship_manager
 from src.orchestration_engine.abuse_detector import abuse_detector
+from src.orchestration_engine.emotional_state import emotional_state_manager
 from src.workers.reminders import reminder_manager
 from src.web_search_engine.intent_detector import search_intent_detector
 from src.web_search_engine.processor import search_processor
@@ -91,6 +92,8 @@ class Orchestrator:
 
         # Настройки чатов
         self._chat_settings: dict[int, ChatSettings] = {}
+        # Tracks which chats have had users loaded from DB
+        self._chat_users_loaded: set[int] = set()
 
         logger.info("Orchestrator initialized", bot_name=settings.bot_name)
 
@@ -103,14 +106,48 @@ class Orchestrator:
         """
         Полный пайплайн обработки сообщения.
         """
+        try:
+            return await self._process_message_inner(msg)
+        except Exception:
+            logger.exception(
+                "Critical error in process_message",
+                chat_id=msg.chat_id,
+                user_id=msg.user_id,
+                text=msg.text[:100],
+            )
+            return None  # Silence is better than crash
+
+    async def _process_message_inner(self, msg: NormalizedMessage) -> str | None:
+        """Inner message processing pipeline."""
         # Сбрасываем consecutive при сообщении от пользователя
         anti_chaos.record_user_message(msg.chat_id)
 
         # ===== ФАЗА 1: СЛУШАЕМ И ЗАПОМИНАЕМ (всегда) =====
 
+        # 0. Ensure we know chat participants (loads from DB after restart)
+        if msg.chat_id not in self._chat_users_loaded:
+            await context_tracker.load_chat_users_from_db(msg.chat_id)
+            self._chat_users_loaded.add(msg.chat_id)
+
         # 1. Трекаем контекст и вайб
         context = context_tracker.get_context_for_message(msg)
         vibe_adapter.analyze_message(msg.chat_id, msg.text)
+
+        # 1.1. Обновляем эмоциональное состояние
+        trigger_eval = trigger_system.evaluate(
+            msg.text,
+            is_reply=msg.reply_to_message_id is not None,
+            reply_to_bot=False,
+            in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
+            chat_id=msg.chat_id,
+        )
+        is_directed = trigger_eval.level == ConfidenceLevel.HIGH
+        await emotional_state_manager.process_message(
+            chat_id=msg.chat_id,
+            user_id=msg.user_id,
+            text=msg.text,
+            is_directed_at_bot=is_directed,
+        )
 
         # Learn new nicknames: if user calls bot by a name that's not in known list,
         # but it looks like a call (name at start of message), learn it
@@ -141,7 +178,7 @@ class Orchestrator:
             return reminder
 
         # ===== ФАЗА 1.6: ДЕТЕКЦИЯ АГРЕССИИ =====
-        abuse_result = abuse_detector.analyze(msg)
+        abuse_result = await abuse_detector.analyze(msg)
         if abuse_result["is_abuse"]:
             if abuse_result["action"] == "auto_silence":
                 settings_obj = self._get_settings(msg.chat_id)
@@ -343,12 +380,23 @@ class Orchestrator:
         vibe_instruction = vibe_adapter.get_style_instruction(msg.chat_id)
         censorship_instruction = censorship_manager.get_instruction_for_llm(msg.chat_id)
 
+        # Эмоциональное состояние
+        emo_state = await emotional_state_manager.get_state(msg.chat_id)
+        emo_hint = emo_state.get_prompt_hint()
+        user_tone_hint = emo_state.get_user_tone_hint(msg.user_id)
+
         system_prompt = bot_personality.get_system_prompt(
             context=context,
             activity_level=activity,
             censorship_instruction=censorship_instruction,
             vibe_instruction=vibe_instruction,
         )
+
+        # Добавляем эмоциональное состояние в промпт
+        if emo_hint:
+            system_prompt += f"\n\nТВОЁ ТЕКУЩЕЕ СОСТОЯНИЕ: {emo_hint}"
+        if user_tone_hint:
+            system_prompt += f"\n{user_tone_hint}"
 
         # Добавляем knowledge report
         knowledge_context = knowledge_report.summary_text
