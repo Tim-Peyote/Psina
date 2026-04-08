@@ -24,4 +24,4 @@ async def register_rpg_skill() -> None:
         from src.skill_system.registry import skill_registry
         from structlog import get_logger
         logger = get_logger()
-        logger.info("RPG skill auto-discovered via SKILL.md", slug=meta.slug)
+        logger.info("RPG skill auto-discovered via SKILL.md", slug=meta.slug, name=meta.name)

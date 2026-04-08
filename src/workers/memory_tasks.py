@@ -24,6 +24,16 @@ from src.memory_services.memory_lifecycle import memory_lifecycle
 logger = structlog.get_logger()
 
 
+def _run_async(coro):
+    """Run async code in Celery with a fresh event loop."""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 @shared_task(name="src.workers.memory_tasks.extract_memory_batch")
 def extract_memory_batch() -> None:
     """Extract memory from unprocessed message batches."""
@@ -86,7 +96,7 @@ def extract_memory_batch() -> None:
             except Exception:
                 logger.exception("Failed to extract memory batch", chat_id=chat.id)
 
-    asyncio.run(_run())
+    _run_async(_run())
 
 
 @shared_task(name="src.workers.memory_tasks.compact_old_sessions")
@@ -103,7 +113,7 @@ def compact_old_sessions() -> None:
         except Exception:
             logger.exception("Failed to compact old sessions")
 
-    asyncio.run(_run())
+    _run_async(_run())
 
 
 @shared_task(name="src.workers.memory_tasks.cleanup_expired_memory")
@@ -120,7 +130,7 @@ def cleanup_expired_memory() -> None:
         except Exception:
             logger.exception("Failed to cleanup expired memory")
 
-    asyncio.run(_run())
+    _run_async(_run())
 
 
 @shared_task(name="src.workers.memory_tasks.rebuild_embeddings")
@@ -168,4 +178,4 @@ def rebuild_embeddings() -> None:
                 except Exception:
                     logger.exception("Failed to rebuild embedding", item_id=item.id)
 
-    asyncio.run(_run())
+    _run_async(_run())

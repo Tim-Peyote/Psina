@@ -103,7 +103,8 @@ def _parse_frontmatter(content: str) -> dict:
 def discover_skill(skill_path: Path) -> SkillMetadata | None:
     """Read only name + description from SKILL.md (Discovery phase).
 
-    Returns None if SKILL.md doesn't exist or is malformed.
+    Uses the directory name as the slug (e.g. 'agent_rpg') for DB consistency.
+    The frontmatter 'name' is kept as display name only.
     """
     skill_md = skill_path / "SKILL.md"
     if not skill_md.exists():
@@ -112,7 +113,11 @@ def discover_skill(skill_path: Path) -> SkillMetadata | None:
     content = skill_md.read_text(encoding="utf-8")
     frontmatter = _parse_frontmatter(content)
 
-    name = frontmatter.get("name", skill_path.name)
+    # SLUG = directory name (e.g. 'agent_rpg'), NOT frontmatter name (e.g. 'agent-rpg')
+    # This ensures DB FK consistency: skills.slug must match skill_state.skill_slug exactly
+    slug = skill_path.name
+    # Display name from frontmatter, fallback to slug
+    display_name = frontmatter.get("name", slug)
     description = frontmatter.get("description", "")
 
     if not description:
@@ -120,8 +125,8 @@ def discover_skill(skill_path: Path) -> SkillMetadata | None:
         return None
 
     return SkillMetadata(
-        slug=name,
-        name=frontmatter.get("name", name),
+        slug=slug,
+        name=display_name,
         description=description[:1024],  # Cap at 1024 chars per spec
         license=frontmatter.get("license", "MIT"),
         compatibility=frontmatter.get("compatibility", {}),
@@ -132,7 +137,7 @@ def discover_skill(skill_path: Path) -> SkillMetadata | None:
 def activate_skill(skill_path: Path) -> SkillMetadata | None:
     """Load full SKILL.md content (Activation phase).
 
-    Returns metadata with full_content populated.
+    Uses the directory name as the slug for DB consistency.
     """
     skill_md = skill_path / "SKILL.md"
     if not skill_md.exists():
@@ -145,11 +150,13 @@ def activate_skill(skill_path: Path) -> SkillMetadata | None:
     match = re.match(r"^---\n.*?\n---\n(.*)", content, re.DOTALL)
     body = match.group(1).strip() if match else ""
 
-    name = frontmatter.get("name", skill_path.name)
+    # SLUG = directory name for DB consistency
+    slug = skill_path.name
+    display_name = frontmatter.get("name", slug)
 
     return SkillMetadata(
-        slug=name,
-        name=name,
+        slug=slug,
+        name=display_name,
         description=frontmatter.get("description", "")[:1024],
         license=frontmatter.get("license", "MIT"),
         compatibility=frontmatter.get("compatibility", {}),

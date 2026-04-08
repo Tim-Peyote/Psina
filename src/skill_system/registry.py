@@ -90,10 +90,69 @@ class SkillRegistry:
                     await session.commit()
                     logger.info("Skill registered in DB", slug=slug, name=meta.name)
 
+        # Cleanup: remove stale slug entries from old naming convention
+        # (e.g. 'agent-rpg' with dashes should be 'agent_rpg' with underscores)
+        await self._cleanup_stale_slugs()
+
+    async def _cleanup_stale_slugs(self) -> None:
+        """Migrate stale skill entries from dash to underscore naming.
+
+        e.g. 'agent-rpg' → 'agent_rpg'
+        Preserves associated SkillState and SkillEvent data.
+        """
+        async for session in get_session():
+            stmt = select(Skill)
+            result = await session.execute(stmt)
+            all_skills = list(result.scalars().all())
+
+            slug_sets = {}
+            for skill in all_skills:
+                normalized = skill.slug.replace("-", "_")
+                if normalized not in slug_sets:
+                    slug_sets[normalized] = []
+                slug_sets[normalized].append(skill)
+
+            for normalized, skills in slug_sets.items():
+                if len(skills) > 1:
+                    # Find the dash version to remove
+                    dash_skill = None
+                    underscore_skill = None
+                    for s in skills:
+                        if "-" in s.slug:
+                            dash_skill = s
+                        else:
+                            underscore_skill = s
+
+                    if dash_skill and underscore_skill:
+                        # Migrate any SkillState from dash → underscore
+                        from src.database.models import SkillState, SkillEvent
+
+                        # Move SkillState
+                        stmt = select(SkillState).where(SkillState.skill_slug == dash_skill.slug)
+                        result = await session.execute(stmt)
+                        states = list(result.scalars().all())
+                        for state in states:
+                            state.skill_slug = underscore_skill.slug
+                            logger.info("Migrated SkillState", from_slug=dash_skill.slug, to_slug=underscore_skill.slug)
+
+                        # Move SkillEvent
+                        stmt = select(SkillEvent).where(SkillEvent.skill_slug == dash_skill.slug)
+                        result = await session.execute(stmt)
+                        events = list(result.scalars().all())
+                        for event in events:
+                            event.skill_slug = underscore_skill.slug
+                            logger.info("Migrated SkillEvent", from_slug=dash_skill.slug, to_slug=underscore_skill.slug)
+
+                        # Now safe to delete the dash entry
+                        logger.info("Removing stale skill entry", slug=dash_skill.slug)
+                        await session.delete(dash_skill)
+
+            await session.commit()
+
     def _get_default_triggers(self, slug: str) -> list[str]:
         """Default triggers for known skills."""
         trigger_map = {
-            "agent-rpg": ["rpg", "играть", "игра", "давай сыграем", "dnd", "подземелья", "драконы", "ролевая", "сессия", "бросок", "кубик", "персонаж"],
+            "agent_rpg": ["rpg", "играть", "игра", "давай сыграем", "dnd", "подземелья", "драконы", "ролевая", "сессия", "бросок", "кубик", "персонаж"],
         }
         return trigger_map.get(slug, [])
 

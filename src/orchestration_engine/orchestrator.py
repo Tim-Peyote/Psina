@@ -472,6 +472,8 @@ class Orchestrator:
         handler = skill_registry.get_skill_handler(skill_slug)
         if not handler:
             logger.warning("No handler for skill", skill=skill_slug)
+            # Fallback: deactivate skill session, let normal pipeline handle
+            await skill_router.deactivate_skill(msg.chat_id, skill_slug)
             return None
 
         try:
@@ -485,7 +487,31 @@ class Orchestrator:
                 return await handler.process_message(msg, msg.chat_id, msg.user_id)
         except Exception:
             logger.exception("Skill handler failed", skill=skill_slug)
-            return "⚠️ Произошла ошибка в скилле. Попробуй ещё раз."
+            # CRITICAL: Deactivate skill session so subsequent messages
+            # don't get stuck in a broken skill loop
+            await skill_router.deactivate_skill(msg.chat_id, skill_slug)
+
+            # Fallback: let normal pipeline handle the message instead of
+            # returning a generic error. Psina will respond naturally.
+            # We re-process through the normal response pipeline.
+            context = context_tracker.get_context_for_message(msg)
+            return await self._generate_response(msg, context, self._fallback_decision(msg))
+
+    def _fallback_decision(self, msg):
+        """Create a routing decision for fallback after skill error."""
+        trigger = trigger_system.evaluate(
+            text=msg.text,
+            is_reply=msg.reply_to_message_id is not None,
+            reply_to_bot=True,  # Treat as direct call since user expects response
+            in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
+        )
+        return RoutingDecision(
+            route=MessageRoute.DIRECT_CALL,
+            confidence=trigger.confidence,
+            trigger=trigger,
+            reason="fallback_from_skill_error",
+            should_respond=True,
+        )
 
     async def _handle_game_command(self, msg: NormalizedMessage) -> str:
         """Обработка игровой команды."""
