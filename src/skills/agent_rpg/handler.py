@@ -128,6 +128,11 @@ async def _handle_session_zero(
                 "status_effects": [],
             }
             characters[str(user_id)] = char_data
+            
+            # Advance step to 4 so next messages go to system selection
+            if state.get("step") == 3:
+                state["step"] = 4
+            
             char_names = ", ".join(
                 c.get("name", "?") for c in characters.values() if c
             )
