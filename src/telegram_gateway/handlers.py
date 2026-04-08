@@ -336,9 +336,13 @@ async def handle_message(message: Message) -> None:
         await _try_react(message, bot, normalized)
 
     response = await orchestrator.process_message(normalized)
+    logger.debug("Orchestrator response", has_response=bool(response), response_text=(response or "")[:200])
     if response:
         # Отвечаем reply на сообщение пользователя
         await _reply(message, response, reply_to=message.message_id)
+        logger.info("Response sent", response_text=response[:100])
+    else:
+        logger.info("No response generated", chat_id=message.chat.id)
 
 
 @router.my_chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))
