@@ -738,32 +738,97 @@ class Orchestrator:
 
     async def handle_clear_command(self, user_id: int, chat_id: int) -> str:
         """Полная очистка контекста чата."""
-        import httpx
-        from src.config import settings
-        
+        from sqlalchemy import select, delete
+        from src.database.session import get_session
+        from src.database.models import (
+            MemoryItem, MemorySummary, MemoryExtractionBatch,
+            UserProfile, ChatVibeProfile, Message, SkillState,
+        )
+
+        deleted = {
+            "memory_items": 0,
+            "memory_summaries": 0,
+            "extraction_batches": 0,
+            "user_profiles": 0,
+            "vibe_profile": 0,
+            "messages": 0,
+            "skill_states": 0,
+        }
+
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    f"http://localhost:{settings.admin_api_port}/api/memory/clear-chat",
-                    json={"chat_id": chat_id},
-                    headers={"Authorization": f"Bearer {settings.admin_api_secret}"},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    deleted = data.get("deleted", {})
-                    total = sum(deleted.values())
-                    return f"✅ Чат очищен. Удалено: {total} записей\n" \
-                           f"  • Память: {deleted.get('memory_items', 0)}\n" \
-                           f"  • Саммари: {deleted.get('memory_summaries', 0)}\n" \
-                           f"  • Профили: {deleted.get('user_profiles', 0)}\n" \
-                           f"  • Сообщения: {deleted.get('messages', 0)}\n" \
-                           f"  • Вайб: {deleted.get('vibe_profile', 0)}\n" \
-                           f"  • Скиллы: {deleted.get('skill_states', 0)}\n\n" \
-                           f"Начинаем с чистого листа."
-                else:
-                    return f"❌ Ошибка очистки: {resp.status_code}"
+            async for session in get_session():
+                # 1. Memory items
+                stmt = select(MemoryItem).where(MemoryItem.chat_id == chat_id)
+                result = await session.execute(stmt)
+                items = list(result.scalars().all())
+                deleted["memory_items"] = len(items)
+                for item in items:
+                    await session.delete(item)
+
+                # 2. Memory summaries
+                stmt = select(MemorySummary).where(MemorySummary.chat_id == chat_id)
+                result = await session.execute(stmt)
+                summaries = list(result.scalars().all())
+                deleted["memory_summaries"] = len(summaries)
+                for s in summaries:
+                    await session.delete(s)
+
+                # 3. Extraction batches
+                stmt = select(MemoryExtractionBatch).where(MemoryExtractionBatch.chat_id == chat_id)
+                result = await session.execute(stmt)
+                batches = list(result.scalars().all())
+                deleted["extraction_batches"] = len(batches)
+                for b in batches:
+                    await session.delete(b)
+
+                # 4. User profiles (только для этого чата)
+                stmt = select(UserProfile).where(UserProfile.chat_id == chat_id)
+                result = await session.execute(stmt)
+                profiles = list(result.scalars().all())
+                deleted["user_profiles"] = len(profiles)
+                for p in profiles:
+                    await session.delete(p)
+
+                # 5. Vibe profile
+                stmt = select(ChatVibeProfile).where(ChatVibeProfile.chat_id == chat_id)
+                result = await session.execute(stmt)
+                vibes = list(result.scalars().all())
+                deleted["vibe_profile"] = len(vibes)
+                for v in vibes:
+                    await session.delete(v)
+
+                # 6. Messages
+                stmt = select(Message).where(Message.chat_id == chat_id)
+                result = await session.execute(stmt)
+                messages = list(result.scalars().all())
+                deleted["messages"] = len(messages)
+                for m in messages:
+                    await session.delete(m)
+
+                # 7. Skill states
+                stmt = select(SkillState).where(SkillState.chat_id == chat_id)
+                result = await session.execute(stmt)
+                skills = list(result.scalars().all())
+                deleted["skill_states"] = len(skills)
+                for s in skills:
+                    await session.delete(s)
+
+                await session.commit()
+
+            total = sum(deleted.values())
+            return f"✅ Чат очищен. Удалено: {total} записей\n" \
+                   f"  • Память: {deleted.get('memory_items', 0)}\n" \
+                   f"  • Саммари: {deleted.get('memory_summaries', 0)}\n" \
+                   f"  • Профили: {deleted.get('user_profiles', 0)}\n" \
+                   f"  • Сообщения: {deleted.get('messages', 0)}\n" \
+                   f"  • Вайб: {deleted.get('vibe_profile', 0)}\n" \
+                   f"  • Скиллы: {deleted.get('skill_states', 0)}\n\n" \
+                   f"Начинаем с чистого листа."
+
         except Exception as e:
-            return f"❌ Ошибка: {str(e)}"
+            import structlog
+            structlog.get_logger().exception("clear_chat_failed", error=str(e))
+            return f"❌ Ошибка при очистке чата: {str(e)}"
 
     async def handle_model_command(self) -> str:
         return (
