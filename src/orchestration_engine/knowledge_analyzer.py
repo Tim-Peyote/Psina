@@ -16,6 +16,7 @@ import structlog
 from src.message_processor.processor import NormalizedMessage
 from src.memory_engine.engine import MemoryEngine
 from src.database.models import MemoryItem, MemoryType, UserProfile
+from src.config import settings
 
 logger = structlog.get_logger()
 
@@ -230,7 +231,6 @@ class KnowledgeAnalyzer:
         matches = NAME_FROM_QUESTION.findall(text)
         if matches:
             # Берём первое найденное имя (не бота)
-            from src.config import settings
             bot_names = {settings.bot_name.lower()} | {a.lower() for a in settings.bot_aliases}
             for name in matches:
                 if name.lower() not in bot_names:
