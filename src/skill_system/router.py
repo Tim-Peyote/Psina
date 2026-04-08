@@ -89,27 +89,38 @@ class SkillRouter:
 
             # Wide exit conditions — user wants to leave skill session
             exit_phrases = [
-                # Direct exit commands
                 "выйти из игры", "выйти из скилла", "stop skill", "/noskill",
-                # Close/stop
-                "закрой игру", "закрой сессию", "закрой скилл", "закрой игру",
+                "закрой игру", "закрой сессию", "закрой скилл",
                 "останови игру", "стоп игра", "стоп сессия", "стоп скилл",
                 "хватит играть", "хватит в игры", "хватит рпг",
-                # Not playing
                 "не играю", "не играем", "мы не играем", "не хочу играть",
-                "я не зову тебя играть", "это не игра", "это не рпг",
-                "не мешай", "не мешай нам", "не лезь",
-                # Shut up / silence (in context of skill session)
-                "заткнись", "замолчи", "замолкай", "заткнись нахуй",
-                # General frustration about skill being wrong
-                "ты не для игр", "ты создан не для", "убери игру",
-                "уйди из режима", "выйди из режима", "выйди из игры",
+                "это не игра", "это не рпг",
+                "не мешай", "не лезь",
+                "заткнись", "замолчи", "замолкай",
+                "ты не для игр", "убери игру",
+                "выйди из режима", "выйди из игры",
+                # Without bot name — standalone
+                "закрой", "хватит", "стоп", "хватит играть",
             ]
             if any(w in text_lower for w in exit_phrases):
                 # Deactivate ALL active skills for this chat
                 for slug in active_skills:
                     await self.deactivate_skill(msg.chat_id, slug)
                 logger.info("Skill session exited by user", skills=active_skills, chat_id=msg.chat_id)
+                return SkillDecision.no_skill()
+
+            # Check if message is clearly NOT about the active skill
+            non_skill_indicators = [
+                "погода", "курс ", "кто выиграл", "что случилось", "какая цена",
+                "сколько стоит", "новости", "какие новости",
+                "как дела", "что делаешь", "помоги", "объясни", "расскажи", "найди",
+                "гугл", "поиск",
+            ]
+            is_clearly_non_skill = any(w in text_lower for w in non_skill_indicators)
+            if is_clearly_non_skill:
+                for slug in active_skills:
+                    await self.deactivate_skill(msg.chat_id, slug)
+                logger.info("Dropped stuck skill session", skills=active_skills, text=msg.text[:80], chat_id=msg.chat_id)
                 return SkillDecision.no_skill()
 
             # Continue active skill
