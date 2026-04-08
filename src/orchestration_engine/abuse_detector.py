@@ -3,16 +3,27 @@ Abuse Detector — детекция издевательств и агресси
 
 Псина имеет характер и не терпит издевательств.
 Отслеживает паттерны агрессии и реагирует.
+Abuse scores are persisted in Redis so they survive restarts.
 """
 
+from __future__ import annotations
+
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import structlog
 
+from src.config import settings
 from src.message_processor.processor import NormalizedMessage
 
 logger = structlog.get_logger()
+
+_REDIS_TTL = 86400  # 24 hours
+
+
+def _redis_key(user_id: int) -> str:
+    return f"abuse:{user_id}"
 
 
 @dataclass
@@ -21,6 +32,22 @@ class AbuseRecord:
     severity: float  # 0.0 — 1.0
     text: str
     response: str  # как бот отреагировал
+
+    def to_dict(self) -> dict:
+        return {
+            "ts": self.timestamp.isoformat(),
+            "sev": self.severity,
+            "txt": self.text[:120],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> AbuseRecord:
+        return cls(
+            timestamp=datetime.fromisoformat(d["ts"]),
+            severity=d["sev"],
+            text=d.get("txt", ""),
+            response="",
+        )
 
 
 @dataclass
@@ -42,12 +69,11 @@ class UserAbuseProfile:
         """Общий скор: чем больше, тем хуже."""
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
         recent = [r for r in self.abuse_records if r.timestamp > cutoff]
-        # Взвешиваем: новые важнее
         now = datetime.now(timezone.utc)
         score = 0.0
         for r in recent:
             age_hours = (now - r.timestamp).total_seconds() / 3600
-            decay = 0.9 ** age_hours  # затухание
+            decay = 0.9 ** age_hours
             score += r.severity * decay
         return score
 
@@ -58,8 +84,9 @@ class AbuseDetector:
     """
 
     def __init__(self) -> None:
-        # user_id -> UserAbuseProfile
+        # user_id -> UserAbuseProfile  (hot cache, backed by Redis)
         self._profiles: dict[int, UserAbuseProfile] = {}
+        self._redis = None
 
         # Паттерны прямой агрессии к боту
         self._direct_abuse = [
@@ -83,7 +110,7 @@ class AbuseDetector:
         self.medium_threshold = 4  # после 4 — строгое предупреждение
         self.severe_threshold = 6  # после 6 — автозаглушка
 
-    def analyze(self, msg: NormalizedMessage) -> dict:
+    async def analyze(self, msg: NormalizedMessage) -> dict:
         """
         Проанализировать сообщение на агрессию к боту.
         Возвращает:
@@ -126,8 +153,8 @@ class AbuseDetector:
                 "response_text": None,
             }
 
-        # 2. Записываем в профиль
-        profile = self._get_profile(user_id)
+        # 2. Записываем в профиль (load from Redis)
+        profile = await self._load_profile(user_id)
         profile.abuse_records.append(AbuseRecord(
             timestamp=datetime.now(timezone.utc),
             severity=severity,
@@ -169,6 +196,9 @@ class AbuseDetector:
             action = "ignore"
             response_text = self._get_first_response()
 
+        # Persist to Redis
+        await self._save_profile(profile)
+
         return {
             "is_abuse": True,
             "severity": severity,
@@ -204,6 +234,51 @@ class AbuseDetector:
         }
 
     # ========== Внутренние методы ==========
+
+    async def _get_redis(self):
+        """Lazy Redis connection."""
+        if self._redis is None:
+            import redis.asyncio as aioredis
+            self._redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        return self._redis
+
+    async def _load_profile(self, user_id: int) -> UserAbuseProfile:
+        """Load abuse profile from Redis, or create a new one."""
+        if user_id in self._profiles:
+            return self._profiles[user_id]
+        try:
+            r = await self._get_redis()
+            data = await r.get(_redis_key(user_id))
+            if data:
+                parsed = json.loads(data)
+                records = [AbuseRecord.from_dict(d) for d in parsed.get("records", [])]
+                silenced = None
+                if parsed.get("silenced_until"):
+                    silenced = datetime.fromisoformat(parsed["silenced_until"])
+                profile = UserAbuseProfile(
+                    user_id=user_id,
+                    abuse_records=records,
+                    auto_silenced_until=silenced,
+                )
+                self._profiles[user_id] = profile
+                return profile
+        except Exception:
+            logger.debug("Redis load failed for abuse profile", user_id=user_id, exc_info=True)
+        profile = UserAbuseProfile(user_id=user_id)
+        self._profiles[user_id] = profile
+        return profile
+
+    async def _save_profile(self, profile: UserAbuseProfile) -> None:
+        """Persist abuse profile to Redis."""
+        try:
+            r = await self._get_redis()
+            data = {
+                "records": [rec.to_dict() for rec in profile.abuse_records],
+                "silenced_until": profile.auto_silenced_until.isoformat() if profile.auto_silenced_until else None,
+            }
+            await r.set(_redis_key(profile.user_id), json.dumps(data), ex=_REDIS_TTL)
+        except Exception:
+            logger.debug("Redis save failed for abuse profile", user_id=profile.user_id, exc_info=True)
 
     def _get_profile(self, user_id: int) -> UserAbuseProfile:
         if user_id not in self._profiles:

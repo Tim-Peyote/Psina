@@ -21,6 +21,7 @@ from src.database.session import get_session
 from src.database.models import Message, MemorySummary, UserProfile
 from src.memory_services.retrieval_service import retrieval_service
 from src.memory_services.models import ContextPack, MemorySearchResult
+from src.utils.sanitize import sanitize_for_prompt
 
 logger = structlog.get_logger()
 
@@ -316,7 +317,10 @@ class ContextPackBuilder:
 
         # Add reply context (what the user is replying to)
         if pack.reply_context:
-            reply_author = pack.reply_context.get("username") or pack.reply_context.get("first_name") or "кто-то"
+            reply_author = sanitize_for_prompt(
+                pack.reply_context.get("username") or pack.reply_context.get("first_name") or "кто-то",
+                max_length=50,
+            )
             reply_text = pack.reply_context.get("text", "")[:200]
             messages.append({
                 "role": "system",
@@ -348,9 +352,10 @@ class ContextPackBuilder:
                     "content": msg.get("text", ""),
                 })
             else:
+                safe_author = sanitize_for_prompt(author, max_length=50)
                 messages.append({
                     "role": "user" if role == "user" else "assistant",
-                    "content": f"[{author}]: {msg.get('text', '')}",
+                    "content": f"[{safe_author}]: {msg.get('text', '')}",
                 })
 
         return messages

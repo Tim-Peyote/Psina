@@ -1,3 +1,4 @@
+import httpx
 import structlog
 from openai import AsyncOpenAI
 
@@ -15,6 +16,7 @@ class QwenProvider(BaseLLMProvider):
         self.client = AsyncOpenAI(
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
+            timeout=httpx.Timeout(30.0, connect=10.0),
         )
         self.model = settings.llm_model
         logger.info("QwenProvider initialized", model=self.model)
@@ -45,9 +47,13 @@ class QwenProvider(BaseLLMProvider):
                 tokens=response.usage.total_tokens if response.usage else 0,
             )
             return content
+        except httpx.TimeoutException:
+            logger.error("Qwen API timeout", model=self.model)
+            from src.llm_adapter.mock import MockProvider
+            mock = MockProvider()
+            return await mock.generate_response(messages, chat_id, user_id)
         except Exception as e:
             logger.error("Qwen API error", error=str(e))
-            # Fallback to mock
             from src.llm_adapter.mock import MockProvider
             mock = MockProvider()
             return await mock.generate_response(messages, chat_id, user_id)
