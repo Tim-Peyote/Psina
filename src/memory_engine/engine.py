@@ -43,6 +43,18 @@ class MemoryEngine:
         importance = calculate_importance(msg)
 
         async for session in get_session():
+            # 1. Сохраняем в messages — для контекст-пака и истории
+            message_record = Message(
+                telegram_id=msg.telegram_id,
+                chat_id=msg.chat_id,
+                user_id=msg.user_id,
+                role=MessageRole.USER,
+                text=msg.text,
+                reply_to_message_id=msg.reply_to_message_id,
+            )
+            session.add(message_record)
+
+            # 2. Сохраняем в memory_items — для фактов и embeddings
             memory_item = MemoryItem(
                 chat_id=msg.chat_id,
                 user_id=msg.user_id,
@@ -53,11 +65,26 @@ class MemoryEngine:
                 source="telegram",
             )
             session.add(memory_item)
+
             await session.commit()
 
     async def save_bot_response(self, text: str, chat_id: int, user_id: int) -> None:
         """Сохранить ответ бота."""
         async for session in get_session():
+            # 1. Сохраняем в messages — для контекст-пака
+            # Генерируем уникальный telegram_id для бота (отрицательный)
+            import time
+            bot_telegram_id = -int(time.time() * 1000)
+            bot_message = Message(
+                telegram_id=bot_telegram_id,
+                chat_id=chat_id,
+                user_id=user_id,
+                role=MessageRole.ASSISTANT,
+                text=text,
+            )
+            session.add(bot_message)
+
+            # 2. Сохраняем в memory_items — для фактов
             session.add(
                 MemoryItem(
                     chat_id=chat_id,

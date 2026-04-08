@@ -33,9 +33,9 @@ class AntiChaosProtection:
         self._consecutive: dict[int, int] = {}
 
         # Настройки из config
-        self.min_cooldown_seconds: int = settings.anti_chaos_cooldown
-        self.max_per_hour: int = settings.anti_chaos_max_per_hour
-        self.max_consecutive: int = settings.anti_chaos_max_consecutive
+        self.min_cooldown_seconds: int = 8  # уменьшено с 30 для живого общения
+        self.max_per_hour: int = 60  # увеличено с 20 для живого общения
+        self.max_consecutive: int = 10  # увеличено с 3 для живого общения
 
     def can_respond(self, chat_id: int, is_urgent: bool = False) -> tuple[bool, str]:
         """

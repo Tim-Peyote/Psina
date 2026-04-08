@@ -36,8 +36,8 @@ class ConversationalSession:
     thread_anchor: int | None = None  # reply_to_message_id
     last_activity: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     message_count: int = 0
-    max_messages: int = 8  # после этого сессия закрывается
-    timeout_seconds: int = 180  # 3 минуты
+    max_messages: int = 30  # увеличено с 8 для более длинных диалогов
+    timeout_seconds: int = 600  # 10 минут, увеличено с 3 для живого общения
 
     @property
     def is_alive(self) -> bool:

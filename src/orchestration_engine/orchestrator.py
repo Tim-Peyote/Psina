@@ -304,7 +304,8 @@ class Orchestrator:
 
         # Anti-chaos: проверяем
         is_urgent = decision.trigger.is_reply_to_bot or decision.trigger.is_explicit_call
-        can_respond, reason = anti_chaos.can_respond(msg.chat_id, is_urgent=is_urgent)
+        in_session = session_manager.is_user_in_session(msg.chat_id, msg.user_id)
+        can_respond, reason = anti_chaos.can_respond(msg.chat_id, is_urgent=is_urgent or in_session)
         if not can_respond:
             logger.debug("Anti-chaos blocked response", reason=reason)
             return None

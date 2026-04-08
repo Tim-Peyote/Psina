@@ -56,6 +56,47 @@ class SkillRegistry:
 
         logger.info("Skills discovered", count=len(self._discovered))
 
+        # Sync file-based skills to DB so the router can find them
+        await self._sync_file_skills_to_db()
+
+    async def _sync_file_skills_to_db(self) -> None:
+        """Ensure all file-based skills are registered in the database."""
+        for slug, meta in self._discovered.items():
+            async for session in get_session():
+                stmt = select(Skill).where(Skill.slug == slug)
+                result = await session.execute(stmt)
+                existing = result.scalar_one_or_none()
+
+                if existing:
+                    # Update if changed
+                    existing.name = meta.name
+                    existing.description = meta.description
+                    existing.system_prompt = meta.full_content
+                    await session.commit()
+                    logger.debug("Skill synced in DB", slug=slug)
+                else:
+                    # Register new skill
+                    skill = Skill(
+                        slug=slug,
+                        name=meta.name,
+                        description=meta.description,
+                        system_prompt=meta.full_content,
+                        triggers=self._get_default_triggers(slug),
+                        version="1.0.0",
+                        config={},
+                        is_active=True,
+                    )
+                    session.add(skill)
+                    await session.commit()
+                    logger.info("Skill registered in DB", slug=slug, name=meta.name)
+
+    def _get_default_triggers(self, slug: str) -> list[str]:
+        """Default triggers for known skills."""
+        trigger_map = {
+            "agent-rpg": ["rpg", "играть", "игра", "давай сыграем", "dnd", "подземелья", "драконы", "ролевая", "сессия", "бросок", "кубик", "персонаж"],
+        }
+        return trigger_map.get(slug, [])
+
     async def activate_skill_by_slug(self, slug: str) -> SkillMetadata | None:
         """Phase 2: Activation — load full SKILL.md for a specific skill.
 

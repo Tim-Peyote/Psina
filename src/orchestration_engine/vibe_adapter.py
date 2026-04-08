@@ -179,13 +179,41 @@ class VibeAdapter:
         if profile.messages_analyzed < 5:
             return "Общайся нейтрально и дружелюбно. Пока мало данных о стиле чата."
 
-        return (
-            f"СТИЛЬ ОБЩЕНИЯ В ЭТОМ ЧАТЕ:\n"
-            f"{'Формальный стиль.' if profile.is_formal else 'Неформальный, дружеский стиль.'}\n"
-            f"{'В чате есть мат — можешь не фильтровать.' if profile.has_mate else 'В чате не матюкаются.'}\n"
-            f"{'Используй эмодзи — тут их любят.' if profile.is_emoji_heavy else 'Эмодзи редко используют.'}\n"
-            f"{'Настроение позитивное.' if profile.mood == 'positive' else 'Настроение напряжённое — будь аккуратнее.' if profile.mood == 'negative' else 'Настроение нейтральное.'}"
-        )
+        instructions = []
+
+        # Формальность
+        if profile.is_formal:
+            instructions.append("В чате формальный стиль — обращайся на 'вы', будь вежлив и корреектен.")
+        else:
+            instructions.append(f"В чате неформальный стиль (formality={profile.formality:.1f}) — обращайся на 'ты', как с другом, можешь использовать сленг.")
+
+        # Мат
+        if profile.has_mate:
+            instructions.append(f"В чате высокий уровень мата (mate={profile.mate_level:.1f}) — можешь использовать ненормативную лексику уместно, не перебарщивая.")
+        else:
+            instructions.append("В чате приличный язык — не используй мат.")
+
+        # Эмодзи
+        if profile.is_emoji_heavy:
+            instructions.append(f"В чате любят эмодзи (emoji={profile.emoji_frequency:.1f}) — ставь их уместно.")
+        else:
+            instructions.append("Эмодзи используют редко — не ставь без необходимости.")
+
+        # Настроение
+        if profile.mood == "positive":
+            instructions.append("Настроение в чате позитивное — будь лёгким и весёлым.")
+        elif profile.mood == "negative":
+            instructions.append("Настроение в чате напряжённое — будь аккуратнее, не провоцируй.")
+        else:
+            instructions.append("Настроение нейтральное — отвечай по делу.")
+
+        # Длина сообщений
+        if profile.avg_length < 30:
+            instructions.append(f"В чате пишут коротко (avg {profile.avg_length:.0f} символов) — не отвечай длинно без необходимости.")
+        elif profile.avg_length > 200:
+            instructions.append(f"В чате пишут развёрнуто (avg {profile.avg_length:.0f} символов) — можешь отвечать подробно.")
+
+        return "\n".join(instructions)
 
     def _detect_mood(self, text: str) -> str:
         """Определить настроение текста."""

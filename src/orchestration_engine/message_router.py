@@ -154,7 +154,7 @@ class MessageRouter:
                     confidence=trigger.confidence,
                     trigger=trigger,
                     reason=f"medium_confidence + session; anti_chaos: {reason}",
-                    should_respond=can_respond and trigger.confidence >= 0.5,
+                    should_respond=can_respond,  # Убрали порог 0.5 — в сессии отвечаем всегда
                 )
             # Не в сессии — молчим
             return RoutingDecision(
