@@ -353,6 +353,7 @@ class Orchestrator:
         # ===== НОВАЯ СИСТЕМА ПАМЯТИ: используем context pack builder =====
         # Собираем ограниченный контекст с релевантной памятью
         reply_ctx = context.get("reply_context")
+        web_context_str = ""  # Web search returns directly, never reaches here
         context_pack = await context_pack_builder.build_context_pack(
             system_prompt=system_prompt,
             chat_id=msg.chat_id,
