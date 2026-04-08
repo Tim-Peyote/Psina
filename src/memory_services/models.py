@@ -65,6 +65,7 @@ class ContextPack(BaseModel):
     user_profile_summary: str = ""
     web_context: str = ""
     knowledge_context: str = ""
+    reply_context: dict[str, Any] | None = None
     total_tokens_estimate: int = 0
 
 

@@ -43,6 +43,7 @@ class ContextPackBuilder:
         include_user_profile: bool = True,
         include_web_context: str = "",
         knowledge_context: str = "",
+        reply_context: dict | None = None,
     ) -> ContextPack:
         """Build a complete context pack for LLM generation.
 
@@ -99,6 +100,9 @@ class ContextPackBuilder:
 
         # 6. Knowledge context
         pack.knowledge_context = knowledge_context
+
+        # 7. Reply context
+        pack.reply_context = reply_context
 
         # 7. Estimate tokens and trim if needed
         pack.total_tokens_estimate = self._estimate_pack_tokens(pack)
@@ -273,6 +277,15 @@ class ContextPackBuilder:
             messages.append({
                 "role": "system",
                 "content": f"Контекст знаний:\n{pack.knowledge_context}",
+            })
+
+        # Add reply context (what the user is replying to)
+        if pack.reply_context:
+            reply_author = pack.reply_context.get("username") or pack.reply_context.get("first_name") or "кто-то"
+            reply_text = pack.reply_context.get("text", "")[:200]
+            messages.append({
+                "role": "system",
+                "content": f"Пользователь отвечает на сообщение {reply_author}: «{reply_text}»",
             })
 
         # Add relevant memories

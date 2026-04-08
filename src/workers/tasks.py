@@ -12,12 +12,45 @@ logger = structlog.get_logger()
 
 
 def _run_async(coro):
-    """Run async code in Celery with a fresh event loop."""
+    """Run async code in Celery with a fresh event loop and isolated DB engine.
+
+    Celery prefork forks create new processes without event loops.
+    The module-level async engine is bound to the old (non-existent) loop.
+    We create a fresh engine inside the new loop to avoid 'different loop' errors.
+    """
     import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
+        # Recreate the async engine inside this loop so asyncpg connections
+        # are bound to the correct event loop
+        from src.database import session as db_session
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from src.config import settings
+
+        db_session.engine = create_async_engine(
+            settings.database_url,
+            echo=False,
+            pool_size=2,
+            max_overflow=5,
+            pool_pre_ping=True,
+            pool_recycle=3600,
+        )
+        db_session.async_session_factory = async_sessionmaker(
+            db_session.engine,
+            class_=db_session.AsyncSession,
+            expire_on_commit=False,
+        )
+
+        result = loop.run_until_complete(coro)
+
+        # Cleanup: close the engine
+        async def _close():
+            await db_session.engine.dispose()
+        loop.run_until_complete(_close())
+
+        return result
     finally:
         loop.close()
 
@@ -56,21 +89,35 @@ def check_reminders() -> None:
     from aiogram import Bot
     from src.config import settings
     from src.database.models import User
+    from datetime import datetime, timezone
 
     # Use sync session for Celery compatibility
     with sync_session_factory() as session:
-        # Get pending reminders
+        # Get ALL unsent reminders (don't filter by time in SQL to avoid tz issues)
         stmt = select(Reminder).where(Reminder.is_sent == False)
         result = session.execute(stmt)
         pending = list(result.scalars().all())
 
-    if not pending:
+    # Timezone-safe filter in Python
+    now = datetime.now(timezone.utc)
+    due = []
+    for r in pending:
+        if r.remind_at is None:
+            continue
+        # Make remind_at timezone-aware if it isn't
+        remind_at = r.remind_at
+        if remind_at.tzinfo is None:
+            remind_at = remind_at.replace(tzinfo=timezone.utc)
+        if remind_at <= now:
+            due.append(r)
+
+    if not due:
         return
 
     async def _send_reminders() -> None:
         bot = Bot(token=settings.telegram_bot_token)
         try:
-            for reminder in pending:
+            for reminder in due:
                 try:
                     text = reminder.content
                     if reminder.target_user_id:

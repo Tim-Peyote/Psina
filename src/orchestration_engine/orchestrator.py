@@ -352,7 +352,7 @@ class Orchestrator:
 
         # ===== НОВАЯ СИСТЕМА ПАМЯТИ: используем context pack builder =====
         # Собираем ограниченный контекст с релевантной памятью
-        web_context_str = ""  # Will be set if web search was performed
+        reply_ctx = context.get("reply_context")
         context_pack = await context_pack_builder.build_context_pack(
             system_prompt=system_prompt,
             chat_id=msg.chat_id,
@@ -361,17 +361,15 @@ class Orchestrator:
             include_user_profile=True,
             include_web_context=web_context_str,
             knowledge_context=knowledge_context,
+            reply_context=reply_ctx,
         )
 
         # Формируем сообщения из context pack
         llm_messages = context_pack_builder.format_pack_for_llm(context_pack)
 
-        # Текущее сообщение (добавляем в конец)
-        author_name = msg.first_name or msg.username or "пользователь"
-        llm_messages.append({
-            "role": "user",
-            "content": f"[{author_name}]: {msg.text}",
-        })
+        # Current message is ALREADY in recent_messages from DB (saved by ingest_message)
+        # Don't duplicate it. The last message in recent_messages IS the current one.
+        # Only add emotional/tone/strategy hints on top.
 
         # Эмоциональная реакция
         emotional = bot_personality.get_emotional_response(msg.text)

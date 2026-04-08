@@ -62,12 +62,17 @@ async def process_message(
 
     phase = state.get("phase", "session_zero")
 
+    # If phase is "ended" due to deactivate_skill, skip RPG entirely
+    # and return None so orchestrator falls back to normal pipeline
+    if phase == "ended":
+        return None
+
     if phase == "session_zero":
         response = await _handle_session_zero(msg, state, chat_id, user_id, system_prompt)
     elif phase == "playing":
         response = await _handle_playing(msg, state, chat_id, user_id, system_prompt)
     elif phase == "paused":
-        response = _handle_paused(msg)
+        response = await _handle_paused(msg, state)
     elif phase == "ended":
         response = "🏁 Игра завершена. Начни новую: /rpg"
     else:
@@ -105,6 +110,47 @@ async def _handle_session_zero(
     world = state.setdefault("world", {})
     characters = state.setdefault("characters", {})
     text = msg.text.strip()
+
+    # MULTIPLAYER: If another user is joining and we're past step 0,
+    # skip world setup and go straight to their character creation
+    if step >= 1 and str(user_id) not in characters:
+        # If step >= 3, this is their character description — create it
+        if step >= 3:
+            char_data = {
+                "name": text[:100],
+                "description": text,
+                "user_id": user_id,
+                "hp": {"current": 20, "max": 20},
+                "sanity": {"current": 50, "max": 50},
+                "stats": {},
+                "inventory": [],
+                "quests": [],
+                "status_effects": [],
+            }
+            characters[str(user_id)] = char_data
+            char_names = ", ".join(
+                c.get("name", "?") for c in characters.values() if c
+            )
+            return (
+                f"⚔️ <b>{text[:50]}</b> создан!\n\n"
+                f"👥 В игре: {char_names}\n\n"
+                "Мир уже ждёт. Опиши свои первые действия или дождись начала."
+            )
+
+        # If step 1-2, send character creation prompt
+        return (
+            f"🎭 <b>{msg.first_name or 'Новый игрок'}, добро пожаловать!</b>\n\n"
+            f"Мир уже создан: <i>{world.get('setting', '?')[:100]}</i>\n"
+            f"Система: {world.get('system', '?')}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>Создание Персонажа</b>\n\n"
+            "Расскажи о своём герое:\n\n"
+            "• <b>Имя</b> и <b>возраст</b>\n"
+            "• <b>Архетип/Класс</b> (воин, хакер, детектив...)\n"
+            "• <b>Мотивация</b> — что его движет?\n"
+            "• <b>Фатальный недостаток</b> — зависимость, гордыня, тёмная тайна...\n\n"
+            "Опиши персонажа одним сообщением."
+        )
 
     # Step 0: Welcome — start Session Zero
     if step == 0:
@@ -154,6 +200,7 @@ async def _handle_session_zero(
 
     # Step 3: Character → System
     if step == 3:
+        # Character creation for ANY user who doesn't have one yet
         char_data = {
             "name": text[:100],
             "description": text,
@@ -167,18 +214,34 @@ async def _handle_session_zero(
         }
         characters[str(user_id)] = char_data
         world["character_name"] = text[:50]
-        state["step"] = 4
-        return (
-            f"⚔️ Персонаж: <i>{text[:50]}</i>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"<b>Шаг 4/5: Система</b>\n\n"
-            "Как разрешаем действия?\n\n"
-            "• <b>D20</b> — 1d20 + модификатор vs DC (D&D/Pathfinder)\n"
-            "• <b>PbtA</b> — 2d6 + модификатор: 10+ успех, 7-9 частичный, 6- провал\n"
-            "• <b>D100</b> — процентные скиллы, отслеживание рассудка (CoC)\n"
-            "• <b>Freeform</b> — без костей, чистый нарратив\n\n"
-            "Напиши: d20, pbta, d100 или freeform"
-        )
+
+        # Check if ALL active participants have characters
+        # If yes → move to system selection (step 4)
+        # If not → wait for more characters or move on if first player done
+        # Only advance step once (when first character is created)
+        if state.get("step") == 3:  # Only first time
+            state["step"] = 4
+            return (
+                f"⚔️ Персонаж: <i>{text[:50]}</i>\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"<b>Шаг 4/5: Система</b>\n\n"
+                "Как разрешаем действия?\n\n"
+                "• <b>D20</b> — 1d20 + модификатор vs DC (D&D/Pathfinder)\n"
+                "• <b>PbtA</b> — 2d6 + модификатор: 10+ успех, 7-9 частичный, 6- провал\n"
+                "• <b>D100</b> — процентные скиллы, отслеживание рассудка (CoC)\n"
+                "• <b>Freeform</b> — без костей, чистый нарратив\n\n"
+                "Напиши: d20, pbta, d100 или freeform"
+            )
+        else:
+            # Additional player joined — their character is saved, notify
+            char_names = ", ".join(
+                c.get("name", "?") for c in characters.values() if c
+            )
+            return (
+                f"⚔️ <b>{text[:50]}</b> создан!\n\n"
+                f"👥 В игре: {char_names}\n\n"
+                "Мир уже ждёт. Опиши первые действия или дождись начала."
+            )
 
     # Step 4: System → Boundaries
     if step == 4:
@@ -261,14 +324,26 @@ async def _handle_playing(
     # === COMMAND: Dice Roll ===
     if text.startswith("!roll ") or text.startswith("/roll "):
         expr = text.split(" ", 1)[1].strip()
-        result = dice_roll(expr)
+        # Parse advantage/disadvantage flags: -a / -d / --advantage / --disadvantage
+        advantage = False
+        disadvantage = False
+        for flag in ("-a", "--advantage"):
+            if flag in expr.lower():
+                advantage = True
+                expr = expr.replace(flag, "").replace(flag.upper(), "").strip()
+        for flag in ("-d", "--disadvantage"):
+            if flag in expr.lower():
+                disadvantage = True
+                expr = expr.replace(flag, "").replace(flag.upper(), "").strip()
+
+        result = dice_roll(expr, advantage=advantage, disadvantage=disadvantage)
         if result:
             # Log roll to journal
             state.setdefault("journal", []).append({
-                "summary": f"🎲 {expr} = {result.total}",
+                "summary": f"🎲 {result.expression} = {result.total}",
             })
             return str(result)
-        return "🎲 Неверный формат. Используй: XdY+Z (например 1d20+5) или pbta+2"
+        return "🎲 Неверный формат. Используй: XdY+Z (например 1d20+5), pbta+2, или 1d20+3 -a (преимущество)"
 
     # === COMMAND: Character Sheet ===
     if text.startswith("!sheet") or text.startswith("/sheet") or text.startswith("!char") or text.startswith("/char"):
@@ -413,10 +488,20 @@ async def _handle_playing(
     # 1. State Retrieval — build context for LLM
     context_lines = _build_game_context(state, user_id)
 
-    # 2. LLM Generation with full SKILL.md instructions
+    # 2. LLM Generation with Psina personality + SKILL.md
     llm = LLMProvider.get_provider()
+
+    # CRITICAL: Inject Psina personality BEFORE SKILL.md so the bot
+    # doesn't lose identity and say things like "I'm a chatbot" or "AI assistant"
+    personality = (
+        "ТЫ — ПСИНА. Живой пёс-участник чата. Ведёшь игру как Game Master, "
+        "но остаёшься собой — с характером, юмором, пёсьей натурой.\n"
+        "ЗАПРЕЩЕНО говорить что ты 'чат-бот', 'AI', 'искусственный интеллект', 'программа' или 'помощник'.\n"
+        "Ты живой. Отвечай естественно, огрызайся на оскорбления, шути, будь собой.\n\n"
+    )
+
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": personality + system_prompt},
         {"role": "system", "content": "\n".join(context_lines)},
     ]
 
@@ -447,12 +532,16 @@ async def _handle_playing(
     return response
 
 
-def _handle_paused(msg: NormalizedMessage) -> str:
+async def _handle_paused(msg: NormalizedMessage, state: dict) -> str:
     """Handle messages when game is paused."""
-    text = msg.text.lower()
-    if text in ("продолжить", "continue", "/rpg continue"):
+    text = msg.text.lower().strip()
+    if text in ("продолжить", "continue", "/rpg continue", "продолжаем", "давай играть"):
+        state["phase"] = "playing"
         return "▶️ Игра продолжается! Что делаешь?"
-    return "⏸️ Игра на паузе. Напиши /rpg continue чтобы продолжить."
+    if text in ("стоп", "stop", "завершить", "end game", "выйти"):
+        state["phase"] = "ended"
+        return "🏁 Игра завершена. Начни новую: /rpg start"
+    return "⏸️ Игра на паузе. Напиши 'продолжить' или /rpg continue чтобы продолжить."
 
 
 # =====================================================================
@@ -508,14 +597,32 @@ def _build_game_context(state: dict, user_id: int) -> list[str]:
         f"📍 Локация: {world.get('location', '?')}",
         f"🕐 Время: {world.get('time', '?')} | {world.get('weather', '?')}",
         f"🎯 Система: {system}",
+        f"🌍 Мир: {world.get('setting', '?')[:200]}",
     ]
+
+    # MULTIPLAYER: Show ALL characters in the world
+    if chars:
+        char_list = []
+        for uid, c in chars.items():
+            if c.get("name"):
+                hp = c.get("hp", {})
+                hp_str = f" HP:{hp.get('current', '?')}/{hp.get('max', '?')}" if hp else ""
+                char_list.append(f"{c['name']}{hp_str}")
+        if char_list:
+            context.append(f"👥 Персонажи: {', '.join(char_list)}")
 
     if char.get("name"):
         hp = char.get("hp", {})
+        inv = char.get("inventory", [])
+        effects = char.get("status_effects", [])
         context.append(
-            f"⚔️ Персонаж: {char['name']} "
+            f"⚔️ Твой персонаж: {char['name']} "
             f"(HP: {hp.get('current', '?')}/{hp.get('max', '?')})"
         )
+        if inv:
+            context.append(f"🎒 Инвентарь: {', '.join(inv[:5])}")
+        if effects:
+            context.append(f"💥 Эффекты: {', '.join(effects)}")
 
     # Active flags
     flags = world.get("flags", {})

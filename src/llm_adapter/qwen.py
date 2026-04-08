@@ -25,11 +25,9 @@ class QwenProvider(BaseLLMProvider):
         chat_id: int = 0,
         user_id: int = 0,
     ) -> str:
-        system_prompt = (
-            "Ты — полезный ассистент в Telegram. Отвечай кратко и по делу. "
-            "Не выдумывай факты. Если не знаешь — скажи."
-        )
-        openai_messages = to_openai_messages(system_prompt, messages)
+        # DON'T add generic system prompt — messages already contain
+        # the full personality/vibe system prompt from the orchestrator.
+        openai_messages = to_openai_messages(None, messages)
 
         try:
             response = await self.client.chat.completions.create(

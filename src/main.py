@@ -76,6 +76,10 @@ async def main() -> None:
     from src.skill_system.registry import skill_registry
     await skill_registry.discover_skills()
 
+    # Load persisted vibe profiles so they survive restarts
+    from src.orchestration_engine.vibe_adapter import vibe_adapter
+    await vibe_adapter.load_all_profiles()
+
     bot_manager = BotManager()
     gateway = GatewayRouter()
 

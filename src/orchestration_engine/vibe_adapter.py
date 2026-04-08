@@ -7,6 +7,8 @@ Vibe Adapter — подстройка под стиль общения чата.
 - Длина сообщений
 - Частота эмодзи
 - Общее настроение
+
+Профили сохраняются в БД (ChatVibeProfile) и восстанавливаются при старте.
 """
 
 import re
@@ -14,8 +16,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import structlog
+from sqlalchemy import select
 
 from src.config import settings
+from src.database.session import get_session
+from src.database.models import ChatVibeProfile
 
 logger = structlog.get_logger()
 
@@ -90,6 +95,7 @@ class VibeProfile:
 class VibeAdapter:
     """
     Анализирует и адаптирует стиль общения под чат.
+    Профили сохраняются в БД и восстанавливаются при старте.
     """
 
     def __init__(self) -> None:
@@ -111,6 +117,74 @@ class VibeAdapter:
             "давай", "норм", "ок", "го",
         }
 
+    async def _load_profile_from_db(self, chat_id: int) -> VibeProfile | None:
+        """Load vibe profile from DB."""
+        async for session in get_session():
+            stmt = select(ChatVibeProfile).where(ChatVibeProfile.chat_id == chat_id)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            if row:
+                profile = VibeProfile(
+                    chat_id=row.chat_id,
+                    formality=row.formality,
+                    mate_level=row.mate_level,
+                    avg_length=row.avg_length,
+                    emoji_frequency=row.emoji_frequency,
+                    mood=row.mood,
+                    messages_analyzed=row.messages_analyzed,
+                    last_updated=row.updated_at or datetime.now(timezone.utc),
+                )
+                self._profiles[chat_id] = profile
+                return profile
+        return None
+
+    async def _save_profile_to_db(self, profile: VibeProfile) -> None:
+        """Persist vibe profile to DB."""
+        async for session in get_session():
+            stmt = select(ChatVibeProfile).where(ChatVibeProfile.chat_id == profile.chat_id)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+            if row:
+                row.formality = profile.formality
+                row.mate_level = profile.mate_level
+                row.avg_length = profile.avg_length
+                row.emoji_frequency = profile.emoji_frequency
+                row.mood = profile.mood
+                row.messages_analyzed = profile.messages_analyzed
+            else:
+                session.add(
+                    ChatVibeProfile(
+                        chat_id=profile.chat_id,
+                        formality=profile.formality,
+                        mate_level=profile.mate_level,
+                        avg_length=profile.avg_length,
+                        emoji_frequency=profile.emoji_frequency,
+                        mood=profile.mood,
+                        messages_analyzed=profile.messages_analyzed,
+                    )
+                )
+            await session.commit()
+
+    async def load_all_profiles(self) -> None:
+        """Load all vibe profiles from DB at startup."""
+        async for session in get_session():
+            stmt = select(ChatVibeProfile)
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+            for row in rows:
+                profile = VibeProfile(
+                    chat_id=row.chat_id,
+                    formality=row.formality,
+                    mate_level=row.mate_level,
+                    avg_length=row.avg_length,
+                    emoji_frequency=row.emoji_frequency,
+                    mood=row.mood,
+                    messages_analyzed=row.messages_analyzed,
+                    last_updated=row.updated_at or datetime.now(timezone.utc),
+                )
+                self._profiles[profile.chat_id] = profile
+        logger.info("Vibe profiles loaded from DB", count=len(self._profiles))
+
     def get_profile(self, chat_id: int) -> VibeProfile:
         """Получить или создать вайб-профиль чата."""
         if chat_id not in self._profiles:
@@ -128,10 +202,13 @@ class VibeAdapter:
         # 1. Мат
         text_lower = text.lower()
         mate_count = sum(1 for w in self._mate_words if w in text_lower)
+        alpha = 0.1
         if mate_count > 0:
-            # Плавное обновление
-            alpha = 0.1
+            # Плавное обновление вверх
             profile.mate_level = profile.mate_level * (1 - alpha) + 1.0 * alpha
+        else:
+            # Медленный decay вниз если мата нет
+            profile.mate_level = max(0.0, profile.mate_level * (1 - alpha * 0.3))
 
         # 2. Формальность
         formal_count = sum(1 for w in self._formal_markers if w in text_lower)
@@ -167,6 +244,12 @@ class VibeAdapter:
             profile.mate_level = max(0.0, min(1.0, profile.mate_level))
             profile.formality = max(0.0, min(1.0, profile.formality))
             profile.emoji_frequency = max(0.0, min(1.0, profile.emoji_frequency))
+
+        # Persist to DB every 10 messages to avoid excessive writes
+        if profile.messages_analyzed % 10 == 0:
+            # Fire-and-forget: schedule save without blocking
+            import asyncio
+            asyncio.ensure_future(self._save_profile_to_db(profile))
 
         return profile
 

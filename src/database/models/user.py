@@ -259,3 +259,18 @@ class SkillEvent(Base):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     event_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChatVibeProfile(Base):
+    """Persisted vibe profile per chat — survives restarts."""
+
+    __tablename__ = "chat_vibe_profiles"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    formality: Mapped[float] = mapped_column(Float, default=0.3)
+    mate_level: Mapped[float] = mapped_column(Float, default=0.0)
+    avg_length: Mapped[float] = mapped_column(Float, default=50.0)
+    emoji_frequency: Mapped[float] = mapped_column(Float, default=0.2)
+    mood: Mapped[str] = mapped_column(String(32), default="neutral")
+    messages_analyzed: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

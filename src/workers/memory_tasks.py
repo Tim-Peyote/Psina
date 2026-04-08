@@ -31,10 +31,11 @@ def _run_async(coro):
     The module-level async engine is bound to the old (non-existent) loop.
     We create a fresh engine inside the new loop to avoid 'different loop' errors.
     """
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
+    try:
         # Recreate the async engine inside this loop so asyncpg connections
         # are bound to the correct event loop
         from src.database import session as db_session
@@ -55,14 +56,14 @@ def _run_async(coro):
             expire_on_commit=False,
         )
 
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            # Cleanup: close the engine
-            import asyncio
-            async def _close():
-                await db_session.engine.dispose()
-            loop.run_until_complete(_close())
+        result = loop.run_until_complete(coro)
+
+        # Cleanup: close the engine
+        async def _close():
+            await db_session.engine.dispose()
+        loop.run_until_complete(_close())
+
+        return result
     finally:
         loop.close()
 

@@ -49,8 +49,10 @@ class ConversationThread:
         self.messages.append({
             "user_id": msg.user_id,
             "username": msg.username,
+            "first_name": msg.first_name,
             "text": msg.text,
             "timestamp": msg.created_at.isoformat(),
+            "telegram_id": msg.telegram_id,
         })
         self.last_activity = msg.created_at
         self.reply_chain.append(msg.telegram_id)

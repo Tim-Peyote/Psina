@@ -36,6 +36,10 @@ class DiceResult:
         if self.modifier != 0:
             parts.append(f"{'+' if self.modifier > 0 else ''}{self.modifier}")
         parts.append(f"= **{self.total}**")
+        if self.is_critical:
+            parts.append("\n🌟 КРИТИЧЕСКИЙ УСПЕХ!")
+        elif self.is_fumble:
+            parts.append("\n💥 КРИТИЧЕСКИЙ ПРОВАЛ!")
         if self.result_text:
             parts.append(f"\n{self.result_text}")
         return " ".join(parts)
@@ -97,13 +101,16 @@ def roll(
         if advantage:
             final_total = max(total1, total2)
             rolls = rolls1 if total1 >= total2 else rolls2
+            adv_text = " (преимущество)"
         else:
             final_total = min(total1, total2)
             rolls = rolls1 if total1 <= total2 else rolls2
+            adv_text = " (помеха)"
         total = final_total
     else:
         rolls = rolls1
         total = total1
+        adv_text = ""
 
     # Determine result text
     result_text = ""
@@ -126,7 +133,7 @@ def roll(
             is_fumble = True
 
     return DiceResult(
-        expression=expression,
+        expression=f"{expression}{adv_text}",
         rolls=rolls,
         modifier=modifier,
         total=total,
