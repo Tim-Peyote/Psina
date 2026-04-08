@@ -7,6 +7,11 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from pgvector.sqlalchemy import Vector
 
 
+def _str_enum_values(enum_class) -> list[str]:
+    """Return enum values (not names) for StrEnum."""
+    return [m.value for m in enum_class]
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -54,7 +59,7 @@ class Chat(Base):
     __tablename__ = "chats"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    type: Mapped[ChatType] = mapped_column(Enum(ChatType), nullable=False)
+    type: Mapped[ChatType] = mapped_column(Enum(ChatType, values_callable=_str_enum_values), nullable=False)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     bot_mode: Mapped[str] = mapped_column(String(32), default="observer")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -70,7 +75,7 @@ class Message(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    role: Mapped[MessageRole] = mapped_column(Enum(MessageRole), nullable=False)
+    role: Mapped[MessageRole] = mapped_column(Enum(MessageRole, values_callable=_str_enum_values), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     reply_to_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -83,7 +88,7 @@ class MemoryItem(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    type: Mapped[MemoryType] = mapped_column(Enum(MemoryType), nullable=False)
+    type: Mapped[MemoryType] = mapped_column(Enum(MemoryType, values_callable=_str_enum_values), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[bytes | None] = mapped_column(nullable=True)
     embedding_vector: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
