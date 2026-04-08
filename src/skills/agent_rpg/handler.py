@@ -79,6 +79,7 @@ async def process_message(
         response = "⚠️ Неизвестное состояние. Перезапусти: /rpg start"
 
     # Save state after every action
+    logger.debug("rpg_state_saved", phase=state.get("phase"), step=state.get("step"), chars=list(state.get("characters", {}).keys()))
     await skill_state_manager.set_state("agent_rpg", chat_id, state)
     await skill_state_manager.log_event("agent_rpg", chat_id, phase, msg.text[:200])
 
@@ -111,10 +112,15 @@ async def _handle_session_zero(
     characters = state.setdefault("characters", {})
     text = msg.text.strip()
 
-    # SAFEGUARD: If state looks corrupted/incomplete, reset to step 0
-    if step >= 1 and not world.get("setting"):
+    # SAFEGUARD: If state looks corrupted (past step 1 but no world data),
+    # reset to step 0. Note: step 1 hasn't set world.setting yet, so only
+    # check for steps 2+.
+    if step >= 2 and not world.get("setting"):
+        logger.warning("rpg_state_corrupted_reset", step=step, setting=world.get("setting"))
         step = 0
         state["step"] = 0
+
+    logger.debug("rpg_state_loaded", phase=phase, step=step, user_in_chars=str(user_id) in characters)
 
     # MULTIPLAYER: If another user is joining and we're past step 0,
     # skip world setup and go straight to their character creation
