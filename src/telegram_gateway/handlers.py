@@ -68,6 +68,10 @@ def _normalize_message(msg: Message) -> NormalizedMessage:
     # Больше НЕ определяем is_mention_bot тут — это делает trigger_system
     is_mention_bot = False
 
+    reply_to_id = None
+    if msg.reply_to_message:
+        reply_to_id = msg.reply_to_message.message_id
+
     return NormalizedMessage(
         telegram_id=msg.message_id,
         chat_id=msg.chat.id,
@@ -76,7 +80,7 @@ def _normalize_message(msg: Message) -> NormalizedMessage:
         username=msg.from_user.username if msg.from_user else None,
         first_name=msg.from_user.first_name if msg.from_user else None,
         text=text.strip(),
-        reply_to_message_id=msg.reply_to_message_id,
+        reply_to_message_id=reply_to_id,
         is_mention_bot=is_mention_bot,  # больше не используется тут
         is_command=is_command,
         command=command,
