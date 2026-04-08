@@ -53,7 +53,7 @@ async def _try_react(message: Message, bot, normalized: "NormalizedMessage") -> 
 def _normalize_message(msg: Message) -> NormalizedMessage:
     """Нормализовать aiogram Message в NormalizedMessage."""
     text = msg.text or msg.caption or ""
-    chat_type = msg.chat.type.value if msg.chat.type else "private"
+    chat_type = msg.chat.type if isinstance(msg.chat.type, str) else "private"
 
     is_command = text.startswith("/")
     command = None

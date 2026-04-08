@@ -23,6 +23,7 @@ async def get_async_session() -> AsyncSession:
         yield session
 
 
-async def get_session() -> AsyncSession:
+async def get_session():
     """Return a standalone session (for non-request contexts)."""
-    return async_session_factory()
+    async with async_session_factory() as session:
+        yield session
