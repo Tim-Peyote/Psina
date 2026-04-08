@@ -133,51 +133,36 @@ async def _handle_session_zero(
         step = 0
         state["step"] = 0
 
-    # MULTIPLAYER: If another user is joining and we're past step 0,
-    # skip world setup and go straight to their character creation
-    if step >= 1 and str(user_id) not in characters:
-        # If step >= 3, this is their character description — create it
-        if step >= 3:
-            char_data = {
-                "name": text[:100],
-                "description": text,
-                "user_id": user_id,
-                "hp": {"current": 20, "max": 20},
-                "sanity": {"current": 50, "max": 50},
-                "stats": {},
-                "inventory": [],
-                "quests": [],
-                "status_effects": [],
-            }
-            characters[str(user_id)] = char_data
+    # MULTIPLAYER: If another user is joining during character creation (step 3+),
+    # skip world setup and go straight to their character creation.
+    # NOTE: Steps 1-2 are world setup — only the first player should handle those.
+    if step >= 3 and str(user_id) not in characters:
+        # This is a new player's character description — create it
+        char_data = {
+            "name": text[:100],
+            "description": text,
+            "user_id": user_id,
+            "hp": {"current": 20, "max": 20},
+            "sanity": {"current": 50, "max": 50},
+            "stats": {},
+            "inventory": [],
+            "quests": [],
+            "status_effects": [],
+        }
+        characters[str(user_id)] = char_data
 
-            # Advance step to 4 so next messages go to system selection
-            if state.get("step") == 3:
-                state["step"] = 4
+        # Advance step to 4 so next messages go to system selection
+        # (or keep at 4 if already past)
+        if state.get("step", 0) < 4:
+            state["step"] = 4
 
-            char_names = ", ".join(
-                c.get("name", "?") for c in characters.values() if c
-            )
-            return (
-                f"⚔️ <b>{text[:50]}</b> создан!\n\n"
-                f"👥 В игре: {char_names}\n\n"
-                "Мир уже ждёт. Опиши свои первые действия или дождись начала."
-            )
-
-        # step 1-2: advance to step 3 so next message creates the character
-        state["step"] = 3
+        char_names = ", ".join(
+            c.get("name", "?") for c in characters.values() if c
+        )
         return (
-            f"🎭 <b>{msg.first_name or 'Новый игрок'}, добро пожаловать!</b>\n\n"
-            f"Мир: <i>{world.get('setting', 'ещё не определён')}</i>\n"
-            f"Система: {world.get('system', 'ещё не выбрана')}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"<b>Создание Персонажа</b>\n\n"
-            "Расскажи о своём герое:\n\n"
-            "• <b>Имя</b> и <b>возраст</b>\n"
-            "• <b>Архетип/Класс</b> (воин, хакер, детектив...)\n"
-            "• <b>Мотивация</b> — что его движет?\n"
-            "• <b>Фатальный недостаток</b> — зависимость, гордыня, тёмная тайна...\n\n"
-            "Опиши персонажа одним сообщением."
+            f"⚔️ <b>{text[:50]}</b> создан!\n\n"
+            f"👥 В игре: {char_names}\n\n"
+            "Мир уже ждёт. Опиши свои первые действия или дождись начала."
         )
 
     # Step 0: Welcome — start Session Zero
