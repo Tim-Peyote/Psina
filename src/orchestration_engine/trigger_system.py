@@ -46,7 +46,7 @@ ALL_BOT_NAMES = BOT_NAMES | BOT_ALIASES
 
 # Сильные сигналы
 STRONG_NAME_START = re.compile(
-    r'^(?:псина|пес|пёс|песик|пёсик|псин)\b[,\s!:.\?]',
+    r'^(?:псина|пес|пёс|песик|пёсик|псин)\b[,\s!:.\?]|^(?:псина|пес|пёс|песик|пёсик|псин)$',
     re.IGNORECASE
 )
 STRONG_QUESTION_TO_BOT = re.compile(
@@ -163,7 +163,7 @@ class TriggerSystem:
 
         # 3a. Имя в начале — сильнейший сигнал
         if STRONG_NAME_START.match(text_stripped):
-            score += 0.5
+            score += 0.75
             reasons.append("name_at_start")
             is_explicit = True
 
