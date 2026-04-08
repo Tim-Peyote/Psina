@@ -117,7 +117,7 @@ class MessageRouter:
                 confidence=trigger.confidence,
                 trigger=trigger,
                 reason="session_continuation",
-                should_respond=trigger.confidence >= 0.5,
+                should_respond=trigger.confidence >= 0.6,  # Повышенный порог — не отвечать на всякую хрень
             )
 
         # 5. Direct call — явное обращение

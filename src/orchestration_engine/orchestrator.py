@@ -448,12 +448,12 @@ class Orchestrator:
         if tone == "supportive":
             llm_messages.append({
                 "role": "system",
-                "content": "Человеку непросто — отвечай мягко и с поддержкой. Можно использовать пёсьи метафоры.",
+                "content": "Человеку непросто — отвечай мягко и с поддержкой.",
             })
         elif tone == "playful":
             llm_messages.append({
                 "role": "system",
-                "content": "Можно ответить с юмором и лёгкостью. Пёсьи шутки уместны.",
+                "content": "Можно ответить с юмором и лёгкостью.",
             })
         elif tone == "calm":
             llm_messages.append({

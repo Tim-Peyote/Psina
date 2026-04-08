@@ -113,6 +113,7 @@ def check_reminders() -> None:
 def send_proactive_messages() -> None:
     """Check all active chats and send proactive messages where appropriate."""
     from aiogram import Bot
+    from src.config import settings
     from src.orchestration_engine.proactive_engine import proactive_engine
     from src.database.models import Chat, ChatType
 
