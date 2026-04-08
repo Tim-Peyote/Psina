@@ -207,6 +207,10 @@ class RetrievalService:
             """)
 
             params = {"embedding": embedding_str, "limit": limit}
+            if chat_id is not None:
+                params["chat_id"] = chat_id
+            if user_id is not None:
+                params["user_id"] = user_id
             result = await session.execute(stmt, params)
             rows = result.fetchall()
 
