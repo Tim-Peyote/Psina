@@ -46,26 +46,45 @@ async def process_message(
 ) -> str | None:
     """Process a message through the RPG skill."""
     try:
-        logger.debug("rpg_handler.entry", chat_id=chat_id, user_id=user_id, text=msg.text[:50])
+        logger.info("rpg_handler.entry", chat_id=chat_id, user_id=user_id, text=msg.text[:100])
 
-        # Activate: load full SKILL.md (~5000 tokens) only once
+        # Stage 1: Activate — load full SKILL.md (~5000 tokens)
+        logger.info("rpg_handler.stage:activate_skill", slug="agent-rpg", chat_id=chat_id)
         skill = await skill_registry.activate_skill_by_slug("agent-rpg")
         if not skill:
+            logger.error("rpg_handler.stage:activate_skill FAILED — skill not found", chat_id=chat_id)
             return "⚠️ Скилл не найден."
 
         system_prompt = skill.full_content
-        logger.debug("rpg_handler.skill_loaded", tokens=len(system_prompt))
+        logger.info("rpg_handler.stage:skill_loaded", tokens=len(system_prompt), content_preview=system_prompt[:200])
 
+        # Stage 2: Load state from DB
+        logger.info("rpg_handler.stage:load_state", chat_id=chat_id)
         state = await skill_state_manager.get_state(
             "agent_rpg", chat_id, default=dict(DEFAULT_CAMPAIGN_STATE)
         )
-        logger.debug("rpg_handler.state_loaded", state_type=type(state).__name__, state_keys=list(state.keys()) if isinstance(state, dict) else "not_dict")
+        logger.info(
+            "rpg_handler.stage:state_loaded",
+            state_type=type(state).__name__,
+            state_keys=list(state.keys()) if isinstance(state, dict) else "not_dict",
+            state_preview=str(state)[:500] if isinstance(state, dict) else repr(state)[:500],
+        )
     except Exception as e:
-        logger.error("rpg_handler.init_failed", error=str(e), exc_info=True)
+        import traceback
+        logger.error(
+            "rpg_handler.init_failed",
+            stage="init/load_state",
+            error_type=type(e).__name__,
+            error=str(e),
+            traceback=traceback.format_exc(),
+            chat_id=chat_id,
+            user_id=user_id,
+        )
         raise
 
     # Validate state structure — DB can return None for any field
     if not isinstance(state, dict):
+        logger.warning("rpg_handler.state_invalid_reset", was_type=type(state).__name__)
         state = dict(DEFAULT_CAMPAIGN_STATE)
     state.setdefault("phase", "session_zero")
     state.setdefault("step", 0)
@@ -76,30 +95,48 @@ async def process_message(
     state.setdefault("journal", [])
 
     phase = state.get("phase", "session_zero")
+    step = state.get("step", 0)
+    logger.info("rpg_handler.stage:dispatch", phase=phase, step=step, chat_id=chat_id, user_id=user_id)
 
     # If phase is "ended" due to deactivate_skill, skip RPG entirely
     # and return None so orchestrator falls back to normal pipeline
     if phase == "ended":
+        logger.info("rpg_handler.stage:ended — skip", chat_id=chat_id)
         return None
 
-    if phase == "session_zero":
-        logger.debug("rpg.processing.session_zero")
-        response = await _handle_session_zero(msg, state, chat_id, user_id, system_prompt)
-    elif phase == "playing":
-        logger.debug("rpg.processing.playing")
-        response = await _handle_playing(msg, state, chat_id, user_id, system_prompt)
-    elif phase == "paused":
-        logger.debug("rpg.processing.paused")
-        response = await _handle_paused(msg, state)
-    elif phase == "ended":
-        response = "🏁 Игра завершена. Начни новую: /rpg"
-    else:
-        response = "⚠️ Неизвестное состояние. Перезапусти: /rpg start"
+    try:
+        if phase == "session_zero":
+            logger.info("rpg.stage:session_zero", step=step)
+            response = await _handle_session_zero(msg, state, chat_id, user_id, system_prompt)
+        elif phase == "playing":
+            logger.info("rpg.stage:playing", chars=list(state.get("characters", {}).keys()))
+            response = await _handle_playing(msg, state, chat_id, user_id, system_prompt)
+        elif phase == "paused":
+            logger.info("rpg.stage:paused")
+            response = await _handle_paused(msg, state)
+        elif phase == "ended":
+            response = "🏁 Игра завершена. Начни новую: /rpg"
+        else:
+            response = "⚠️ Неизвестное состояние. Перезапусти: /rpg start"
+    except Exception as e:
+        import traceback
+        logger.error(
+            "rpg_handler.phase_handler_failed",
+            stage=f"execute/{phase}",
+            phase=phase,
+            step=step,
+            error_type=type(e).__name__,
+            error=str(e),
+            traceback=traceback.format_exc(),
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+        raise
 
-    logger.debug("rpg.processing.done", phase=phase, response_len=len(response) if response else 0)
+    logger.info("rpg.stage:done", phase=phase, response_len=len(response) if response else 0)
 
     # Save state after every action
-    logger.debug("rpg_state_saved", phase=state.get("phase"), step=state.get("step"), chars=list(state.get("characters", {}).keys()))
+    logger.info("rpg.stage:save_state", phase=state.get("phase"), step=state.get("step"), chars=list(state.get("characters", {}).keys()))
     await skill_state_manager.set_state("agent_rpg", chat_id, state)
     await skill_state_manager.log_event("agent_rpg", chat_id, phase, msg.text[:200])
 

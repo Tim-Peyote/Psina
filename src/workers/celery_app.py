@@ -30,12 +30,6 @@ celery_app.conf.beat_schedule = {
         "schedule": 60.0,  # every 60 seconds
         "options": {"expires": 55},
     },
-    # Proactive messages
-    "send-proactive-messages": {
-        "task": "src.workers.tasks.send_proactive_messages",
-        "schedule": 300.0,  # every 5 minutes
-        "options": {"expires": 240},
-    },
     # Memory system tasks
     "extract-memory-batch": {
         "task": "src.workers.memory_tasks.extract_memory_batch",

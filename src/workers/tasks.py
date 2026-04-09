@@ -114,42 +114,12 @@ def check_reminders() -> None:
 
 @shared_task(name="src.workers.tasks.send_proactive_messages")
 def send_proactive_messages() -> None:
-    """Check all active chats and send proactive messages where appropriate."""
-    from aiogram import Bot
-    from src.config import settings
-    from src.orchestration_engine.proactive_engine import proactive_engine
-    from src.database.models import Chat, ChatType
+    """NO-OP — proactive messages runs in main bot process as asyncio task.
 
-    with sync_session_factory() as session:
-        stmt = select(Chat).where(
-            Chat.type.in_([ChatType.GROUP, ChatType.SUPERGROUP])
-        )
-        result = session.execute(stmt)
-        chats = list(result.scalars().all())
-
-    if not chats:
-        return
-
-    async def _run():
-        bot = Bot(token=settings.telegram_bot_token)
-        try:
-            for chat in chats:
-                try:
-                    msg = await proactive_engine.check_chat(chat.id)
-                    if msg:
-                        formatted_msg = message_postprocessor.process(msg)
-                        await bot.send_message(
-                            chat_id=chat.id,
-                            text=formatted_msg,
-                            parse_mode="HTML",
-                        )
-                        logger.info("Proactive message sent", chat_id=chat.id, text=msg[:50])
-                except Exception:
-                    logger.debug("Proactive check failed", chat_id=chat.id, exc_info=True)
-        finally:
-            await bot.session.close()
-
-    _run_async(_run())
+    Moved out of Celery to avoid async Redis + fork event loop mismatch.
+    See src.main — proactive_loop runs alongside the bot.
+    """
+    pass
 
 
 @shared_task(name="src.workers.tasks.update_user_profiles")
