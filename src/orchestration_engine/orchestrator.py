@@ -196,8 +196,8 @@ class Orchestrator:
         # ===== ФАЗА 1.7: LLM-МАРШРУТИЗАЦИЯ =====
         # LLM-роутер решает: поиск / скилл / ответить / молчать
         route_decision = await self._llm_route(msg)
-        if route_decision:
-            return route_decision
+        if route_decision is not None:
+            return route_decision  # "" = hard silence, non-empty = actual response
 
         # ===== ФАЗА 2: БЫСТРЫЕ КОМАНДЫ (fast-path) =====
 
@@ -397,7 +397,10 @@ class Orchestrator:
         # === ACTION: STAY_SILENT ===
         if decision.should_be_silent:
             logger.debug("LLM decided to stay silent", text=msg.text[:80])
-            return None
+            # High confidence silence = hard stop (don't continue to normal pipeline)
+            if decision.confidence >= 0.8:
+                return ""  # Empty string = hard silence, pipeline stops
+            return None  # Low confidence = let normal pipeline decide
 
         # === ACTION: ANSWER_DIRECTLY ===
         # LLM решил что бот может ответить — идём дальше по обычному pipeline

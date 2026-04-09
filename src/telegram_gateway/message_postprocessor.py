@@ -46,6 +46,7 @@ class MessagePostProcessor:
             return text
 
         result = text
+        result = self._clean_citation_markers(result)
         result = self._normalize_whitespace(result)
         result = self._convert_markdown_to_html(result)
         result = self._format_lists(result)
@@ -121,6 +122,18 @@ class MessagePostProcessor:
         # Убираем пустые строки в начале/конце
         text = text.strip()
 
+        return text
+
+    def _clean_citation_markers(self, text: str) -> str:
+        """
+        Удаляет маркеры цитирования вида 【4】, 【2】, [1], [2] и т.д.
+
+        LLM часто добавляет их при генерации ответов с поиском.
+        """
+        # Unicode brackets: 【1】, 【2】, etc.
+        text = re.sub(r'【\d+】', '', text)
+        # Regular brackets: [1], [2], etc. (only if they look like citations)
+        text = re.sub(r'\[\d+\]', '', text)
         return text
 
     def _convert_markdown_to_html(self, text: str) -> str:

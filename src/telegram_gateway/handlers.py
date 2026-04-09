@@ -36,6 +36,9 @@ orchestrator = Orchestrator()
 
 async def _reply(message: Message, text: str, reply_to: int | None = None) -> None:
     """Отправить ответ и зарегистрировать ID для reply detection."""
+    if not text or not text.strip():
+        return
+
     import re
     from src.context_tracker.tracker import context_tracker
 
@@ -47,6 +50,38 @@ async def _reply(message: Message, text: str, reply_to: int | None = None) -> No
 
         Falls back to DB lookup via context_tracker.resolve_name().
         """
+        def replace_mention(match):
+            username = match.group(1)
+            user_id = context_tracker.resolve_name(username)
+            if user_id:
+                return f'<a href="tg://user?id={user_id}">@{username}</a>'
+            logger.debug("Unresolved mention", username=username, chat_id=message.chat.id)
+            return match.group(0)
+
+        return re.sub(r'@(\w+)', replace_mention, t)
+
+    formatted_text = convert_mentions(formatted_text)
+
+    sent = await message.answer(
+        formatted_text,
+        reply_to_message_id=reply_to,
+        parse_mode="HTML",
+    )
+    message_router.register_bot_message(sent.message_id)
+
+
+async def _reply_raw(message: Message, text: str, reply_to: int | None = None) -> None:
+    """Отправить уже обработанный HTML-текст (без повторного постпроцессинга)."""
+    if not text or not text.strip():
+        return
+
+    import re
+    from src.context_tracker.tracker import context_tracker
+
+    # Только конвертим @упоминания
+    formatted_text = text
+
+    def convert_mentions(t):
         def replace_mention(match):
             username = match.group(1)
             user_id = context_tracker.resolve_name(username)
@@ -353,9 +388,12 @@ async def handle_search(message: Message, command: CommandObject) -> None:
 
 async def _send_with_typing(message: Message, response: str, reply_to: int | None = None) -> None:
     """Send response with natural typing simulation and optional message splitting."""
+    if not response or not response.strip():
+        return
+
     bot = message.bot
 
-    # Постпроцессинг перед отправкой
+    # Постпроцессинг перед отправкой (единожды)
     response = message_postprocessor.process(response)
 
     # Show typing indicator
@@ -372,8 +410,8 @@ async def _send_with_typing(message: Message, response: str, reply_to: int | Non
     # Умная разбивка на части через постпроцессор
     parts = message_postprocessor.split_message(response)
 
-    # Send first part as reply
-    await _reply(message, parts[0], reply_to=reply_to)
+    # Send first part as reply (already processed, skip re-processing)
+    await _reply_raw(message, parts[0], reply_to=reply_to)
 
     # Send remaining parts with small delays
     for part in parts[1:]:
@@ -383,7 +421,7 @@ async def _send_with_typing(message: Message, response: str, reply_to: int | Non
             except Exception:
                 pass
         await asyncio.sleep(random.uniform(0.8, 2.0))
-        await _reply(message, part)
+        await _reply_raw(message, part)
 
 
 @router.message(F.text)
