@@ -67,7 +67,7 @@ class SearchProcessor:
         context_parts = []
         for i, r in enumerate(results, 1):
             context_parts.append(
-                f"[{i}] {r.title}\n{r.snippet}\nИсточник: {r.url}"
+                f"[{i}] {r.title}\n{r.snippet}\nURL: {r.url}"
             )
 
         search_context = "\n\n".join(context_parts)
@@ -85,9 +85,15 @@ class SearchProcessor:
             "НЕ оправдывайся за отсутствие доступа к интернету. "
             "Ответь кратко и по делу, используя результаты поиска ниже. "
             "Если результаты противоречивы — скажи об этом. "
-            "В конце укажи источник(ы). "
             "НЕ выдумывай информацию которой нет в результатах поиска. "
-            "НЕ используй маркеры цитирования вида 【1】, 【2】, [1], [2] — просто пиши текст."
+            "НЕ используй маркеры цитирования вида 【1】, 【2】, [1], [2] — просто пиши текст.\n\n"
+            "ПРАВИЛА ДЛЯ ССЫЛОК:\n"
+            "- Когда указываешь источники — используй ПОЛНУЮ ссылку из поля URL\n"
+            "- Формат: <a href=\"ПОЛНЫЙ_URL\">описание страницы</a>\n"
+            "- НЕ обрезай ссылку до домена — всегда используй полный URL из результатов\n"
+            "- Описание ссылки — название статьи из поля title\n"
+            "- Пример: <a href=\"https://www.gismeteo.ru/weather-sochi-5233/\">Погода в Сочи — Gismeteo</a>\n"
+            "- НЕ пиши <a href=\"https://gismeteo.ru\">Gismeteo</a> — это НЕ полная ссылка"
         )
 
         user_message = (
@@ -111,7 +117,11 @@ class SearchProcessor:
             )
             # Fallback — просто вернём сырые результаты
             snippets = [f"• {r.snippet}" for r in results[:3]]
-            fallback = f"По запросу «{query}»:\n\n" + "\n".join(snippets) + f"\n\n(Источник: {results[0].source})"
+            links = "\n".join(
+                f"• <a href=\"{r.url}\">{r.title}</a>"
+                for r in results[:3]
+            )
+            fallback = f"По запросу «{query}»:\n\n" + "\n".join(snippets) + f"\n\n<b>Источники:</b>\n{links}"
             return message_postprocessor.process(fallback)
 
     def _check_limits(self) -> bool:
