@@ -254,19 +254,13 @@ class Orchestrator:
                 confidence=search_intent.confidence,
                 reason=search_intent.reason,
             )
-            # Проверяем что это обращение к боту или сессия
-            trigger = trigger_system.evaluate(
-                msg.text,
-                is_reply=msg.reply_to_message_id is not None,
-                reply_to_bot=False,
-                in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
-                chat_id=msg.chat_id,
-            )
-            if trigger.level == ConfidenceLevel.HIGH or msg.is_private:
+            # Запускаем поиск если intent confidence высокий — независимо от trigger
+            if search_intent.confidence >= 0.8 or trigger_eval.level == ConfidenceLevel.HIGH or msg.is_private:
                 search_response = await search_processor.search_and_answer(search_intent.query)
-                # Регистрируем как сообщение бота для reply detection
                 message_router.register_bot_message(msg.telegram_id)
-                return search_response
+                if search_response:
+                    return search_response
+                logger.warning("Search returned empty response", query=search_intent.query)
 
         # Behavior control — меняем режим
         if decision.route == MessageRoute.BEHAVIOR_CONTROL:
