@@ -145,7 +145,7 @@ async def handle_help(message: Message) -> None:
         "/profile — твой профиль\n"
         "/clear — полная очистка контекста чата\n"
         "/mode — текущий режим бота\n"
-        "/game — игровые команды\n"
+        "/game — RPG-игра (DnD, сессия)\n"
         "/settings — настройки чата\n"
         "/model — информация о модели\n"
         "/budget — использование токенов\n"
@@ -155,8 +155,7 @@ async def handle_help(message: Message) -> None:
         "/search [запрос] — поиск в интернете\n"
         "/censorship [strict|moderate|free] — уровень цензуры\n"
         "/vibe — текущий вайб чата\n"
-        "/skills — список скиллов\n"
-        "/game [start|stop|continue|status] — RPG Game Master\n\n"
+        "/skills — список скиллов\n\n"
         f"💡 <b>Совет:</b> Просто позови по имени — «{settings.bot_name}, ...» "
         f"или «{settings.bot_aliases[0]}, ...»\n\n"
         f"🗣️ <b>Речью:</b> «заткнись», «будь поактивнее», «сбавь», "
@@ -335,7 +334,7 @@ async def handle_search(message: Message, command: CommandObject) -> None:
     if not query:
         await _reply(message,
             "🔍 <b>Поиск в интернете:</b>\n\n"
-            f"Просто спроси меня — «{settings.bot_name}, какая погода в Москве?»\n"
+            f"Просто спроси — «найди в интернете стоимость камаза»\n"
             f"Или используй: /search запрос\n\n"
             f"Примеры:\n"
             f"• «кто выиграл матч Барсы»\n"
