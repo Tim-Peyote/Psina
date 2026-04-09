@@ -3,7 +3,7 @@ Search Processor — пайплайн поиска.
 
 1. Проверяет кеш
 2. Проверяет лимиты
-3. Запрашивает SearXNG
+3. Запрашивает DuckDuckGo
 4. Формирует ответ через LLM
 """
 
@@ -45,8 +45,8 @@ class SearchProcessor:
                 logger.warning("Search rate limit exceeded", query=query)
                 return "Извини, я исчерпал лимит поиска на сегодня. Попробуй позже."
 
-        # Ищем через SearXNG
-        logger.info("Calling SearXNG", query=query, provider=search_provider.get_name())
+        # Ищем
+        logger.info("Calling search engine", query=query, provider=search_provider.get_name())
         results = await search_provider.search(query, max_results=settings.web_search_max_results)
 
         if not results:
