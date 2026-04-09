@@ -97,8 +97,12 @@ class SearchIntentDetector:
         for reason, pattern, base_score in self._search_patterns:
             match = pattern.search(text)
             if match:
-                # Извлекаем query из группы или всего текста
-                query = match.group(1) if match.lastindex else text.strip()
+                # Для явного поиска ("найди X") — берём группу
+                # Для остальных — весь запрос целиком
+                if reason == "explicit_search":
+                    query = match.group(1).strip()
+                else:
+                    query = text.strip()
 
                 if base_score > best_score:
                     best_score = base_score
