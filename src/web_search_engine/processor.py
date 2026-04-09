@@ -1,17 +1,20 @@
 """
-Search Processor — обработка результатов поиска.
+Search Processor — пайплайн поиска.
 
-1. Берёт сырые результаты поиска
-2. Чистит и лимитирует по токенам
-3. Скармливает LLM для формирования ответа
-4. Возвращает ответ с источником
+1. Проверяет кеш
+2. Проверяет лимиты
+3. Запрашивает SearXNG
+4. Формирует ответ через LLM
 """
+
+import time
+from datetime import datetime, timedelta, timezone
 
 import structlog
 
 from src.config import settings
 from src.llm_adapter.base import LLMProvider, to_openai_messages
-from src.web_search_engine.search_provider import SearchResult
+from src.web_search_engine.search_provider_base import SearchResult
 from src.web_search_engine.cache import search_cache
 from src.web_search_engine.search_provider import search_provider
 
@@ -27,15 +30,13 @@ class SearchProcessor:
         self._daily_count: list[float] = []
 
     async def search_and_answer(self, query: str) -> str:
-        """
-        Выполнить поиск и сформировать ответ через LLM.
-        """
+        """Выполнить поиск и сформировать ответ через LLM."""
         logger.info("Search requested", query=query)
 
         # Проверяем кеш
         cached = search_cache.get(query)
         if cached:
-            logger.debug("Using cached search results", query=query)
+            logger.info("Search cache hit", query=query, results=len(cached))
             return await self._generate_answer(query, cached)
 
         # Проверяем лимиты
@@ -44,27 +45,24 @@ class SearchProcessor:
                 logger.warning("Search rate limit exceeded", query=query)
                 return "Извини, я исчерпал лимит поиска на сегодня. Попробуй позже."
 
-        # Ищем
-        logger.debug("Executing web search", query=query, provider=search_provider.get_name())
+        # Ищем через SearXNG
+        logger.info("Calling SearXNG", query=query, provider=search_provider.get_name())
         results = await search_provider.search(query, max_results=settings.web_search_max_results)
 
         if not results:
-            logger.info("No search results found", query=query)
+            logger.warning("Search returned no results", query=query)
             return f"Не нашёл ничего по запросу «{query}». Попробуй переформулировать."
 
         # Кеш
         search_cache.put(query, results)
-
-        # Считаем
         self._record_usage()
 
         # Формируем ответ
-        logger.debug("Generating LLM answer from search results", query=query, results_count=len(results))
+        logger.info("Generating LLM answer", query=query, results_count=len(results))
         return await self._generate_answer(query, results)
 
     async def _generate_answer(self, query: str, results: list[SearchResult]) -> str:
         """Сформировать ответ через LLM."""
-        # Формируем контекст из результатов
         context_parts = []
         for i, r in enumerate(results, 1):
             context_parts.append(
@@ -73,12 +71,19 @@ class SearchProcessor:
 
         search_context = "\n\n".join(context_parts)
 
+        logger.debug(
+            "Built search context",
+            query=query,
+            results_count=len(results),
+            context_preview=search_context[:200],
+        )
+
         system_prompt = (
             "Ты — Бот, участник чата. "
             "Тебе дали результаты поиска по запросу пользователя. "
             "Ответь кратко и по делу, используя эти результаты. "
             "Если результаты противоречивы — скажи об этом. "
-            "В конце укажи источник(ы) — DuckDuckGo. "
+            "В конце укажи источник(ы). "
             "НЕ выдумывай информацию которой нет в результатах поиска."
         )
 
@@ -92,49 +97,49 @@ class SearchProcessor:
 
         try:
             response = await self._llm.generate_response(messages=messages)
+            logger.info("Search answer generated", query=query, answer_len=len(response))
             return response
         except Exception as e:
-            logger.error("Failed to generate search answer", error=str(e))
+            logger.error(
+                "LLM failed to generate search answer, returning raw results",
+                query=query,
+                error=type(e).__name__,
+                details=str(e),
+            )
             # Fallback — просто вернём сырые результаты
             snippets = [f"• {r.snippet}" for r in results[:3]]
-            return f"По запросу «{query}»:\n\n" + "\n".join(snippets) + f"\n\n(Источник: {results[0].source if results else 'web'})"
+            return f"По запросу «{query}»:\n\n" + "\n".join(snippets) + f"\n\n(Источник: {results[0].source})"
 
     def _check_limits(self) -> bool:
         """Проверить лимиты."""
-        from datetime import datetime, timedelta, timezone
-
         now = datetime.now(timezone.utc)
 
-        # Hourly
         hour_ago = now - timedelta(hours=1)
         self._hourly_count = [t for t in self._hourly_count if t > hour_ago.timestamp()]
         if len(self._hourly_count) >= settings.web_search_max_per_hour:
+            logger.warning("Hourly search limit reached", count=len(self._hourly_count), limit=settings.web_search_max_per_hour)
             return False
 
-        # Daily
         day_ago = now - timedelta(days=1)
         self._daily_count = [t for t in self._daily_count if t > day_ago.timestamp()]
         if len(self._daily_count) >= settings.web_search_max_per_day:
+            logger.warning("Daily search limit reached", count=len(self._daily_count), limit=settings.web_search_max_per_day)
             return False
 
         return True
 
     def _record_usage(self) -> None:
         """Записать использование."""
-        import time
         now = time.time()
         self._hourly_count.append(now)
         self._daily_count.append(now)
 
     def get_usage_stats(self) -> dict:
         """Получить статистику поиска."""
-        from datetime import datetime, timedelta, timezone
-
         now = datetime.now(timezone.utc)
         hour_ago = now - timedelta(hours=1)
         day_ago = now - timedelta(days=1)
 
-        import time
         hourly = len([t for t in self._hourly_count if t > hour_ago.timestamp()])
         daily = len([t for t in self._daily_count if t > day_ago.timestamp()])
 

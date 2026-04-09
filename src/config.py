@@ -82,6 +82,8 @@ class Settings(BaseSettings):
 
     # Web search
     web_search_enabled: bool = True
+    web_search_provider: str = "searxng"  # searxng | mock
+    searxng_url: str = "http://searxng:8080"  # SearXNG instance URL
     web_search_unlimited: bool = True
     web_search_max_per_hour: int = 100
     web_search_max_per_day: int = 500

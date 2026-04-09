@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import structlog
 
 from src.config import settings
-from src.web_search_engine.search_provider import SearchResult
+from src.web_search_engine.search_provider_base import SearchResult
 
 logger = structlog.get_logger()
 

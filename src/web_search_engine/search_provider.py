@@ -1,146 +1,28 @@
 """
-Search Providers — абстракция и реализации для веб-поиска.
+Search Providers — реестр поисковых провайдеров.
 
-Провайдеры:
-- DuckDuckGo (бесплатный, без API ключа)
-- Mock (для разработки)
+Единственный провайдер: SearXNG.
 """
-
-import asyncio
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
 import structlog
 
 from src.config import settings
+from src.web_search_engine.searxng_provider import SearXNGProvider
 
 logger = structlog.get_logger()
-
-
-@dataclass
-class SearchResult:
-    title: str
-    url: str
-    snippet: str
-    source: str
-
-
-class BaseSearchProvider(ABC):
-    """Абстрактный интерфейс поиска."""
-
-    @abstractmethod
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
-        """Выполнить поиск."""
-        ...
-
-    @abstractmethod
-    def get_name(self) -> str:
-        """Название провайдера."""
-        ...
-
-
-class DuckDuckGoProvider(BaseSearchProvider):
-    """
-    Бесплатный поиск через DuckDuckGo.
-    Использует пакет duckduckgo_search.
-    """
-
-    def __init__(self) -> None:
-        from duckduckgo_search import DDGS
-        self._ddgs = DDGS()
-
-    def _recreate_ddgs(self) -> None:
-        """Пересоздать DDGS instance при ошибке."""
-        try:
-            from duckduckgo_search import DDGS
-            self._ddgs = DDGS()
-            logger.debug("DDGS instance recreated")
-        except Exception:
-            logger.exception("Failed to recreate DDGS")
-
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
-        max_results = min(max_results, settings.web_search_max_results)
-
-        try:
-            # Синхронный вызов в отдельном потоке чтобы не блокировать event loop
-            results = await asyncio.to_thread(
-                self._ddgs.text, query, max_results=max_results
-            )
-
-            search_results = []
-            for r in results:
-                search_results.append(SearchResult(
-                    title=r.get("title", ""),
-                    url=r.get("href", ""),
-                    snippet=r.get("body", ""),
-                    source="DuckDuckGo",
-                ))
-
-            logger.info("DuckDuckGo search completed", query=query, results=len(search_results))
-            return search_results
-
-        except Exception as e:
-            logger.warning("DuckDuckGo search failed, retrying", query=query, error=str(e))
-            # Пересоздаём инстанс и пробуем ещё раз
-            try:
-                self._recreate_ddgs()
-                results = await asyncio.to_thread(
-                    self._ddgs.text, query, max_results=max_results
-                )
-
-                search_results = []
-                for r in results:
-                    search_results.append(SearchResult(
-                        title=r.get("title", ""),
-                        url=r.get("href", ""),
-                        snippet=r.get("body", ""),
-                        source="DuckDuckGo",
-                    ))
-
-                logger.info("DuckDuckGo search completed after retry", query=query, results=len(search_results))
-                return search_results
-
-            except Exception as e2:
-                logger.error("DuckDuckGo search failed completely", query=query, error=str(e2))
-                return []
-
-    def get_name(self) -> str:
-        return "DuckDuckGo"
-
-
-class MockSearchProvider(BaseSearchProvider):
-    """Моковый поиск для разработки."""
-
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
-        return [
-            SearchResult(
-                title=f"[Mock] {query}",
-                url="https://mock.example",
-                snippet=f"Это моковый результат для запроса: {query}",
-                source="Mock",
-            )
-        ]
-
-    def get_name(self) -> str:
-        return "Mock"
 
 
 class SearchRegistry:
     """Реестр поисковых провайдеров."""
 
-    _providers: dict[str, BaseSearchProvider] = {
-        "duckduckgo": DuckDuckGoProvider(),
-        "mock": MockSearchProvider(),
-    }
+    _provider: SearXNGProvider | None = None
 
     @classmethod
-    def get_provider(cls) -> BaseSearchProvider:
-        # По умолчанию DuckDuckGo
-        return cls._providers.get("duckduckgo", cls._providers["mock"])
-
-    @classmethod
-    def get_mock(cls) -> BaseSearchProvider:
-        return cls._providers["mock"]
+    def get_provider(cls) -> SearXNGProvider:
+        if cls._provider is None:
+            cls._provider = SearXNGProvider()
+        return cls._provider
 
 
+# Singleton
 search_provider = SearchRegistry.get_provider()
