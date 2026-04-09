@@ -24,6 +24,7 @@ from src.summarizer.daily import DailySummarizer
 from src.game_engine.manager import GameManager
 from src.context_tracker.tracker import context_tracker
 from src.orchestration_engine.personality import bot_personality
+from src.orchestration_engine.llm_router import LLMRouter, LLMRouteDecision, RouteAction, get_router, init_router
 from src.orchestration_engine.message_router import message_router, MessageRoute, RoutingDecision
 from src.orchestration_engine.session_manager import session_manager
 from src.orchestration_engine.anti_chaos import anti_chaos
@@ -34,7 +35,6 @@ from src.orchestration_engine.censorship_manager import censorship_manager
 from src.orchestration_engine.abuse_detector import abuse_detector
 from src.orchestration_engine.emotional_state import emotional_state_manager
 from src.workers.reminders import reminder_manager
-from src.web_search_engine.intent_detector import search_intent_detector
 from src.web_search_engine.processor import search_processor
 # New memory services
 from src.memory_services.context_pack import context_pack_builder
@@ -89,6 +89,9 @@ class Orchestrator:
         self.retriever = Retriever()
         self.summarizer = DailySummarizer()
         self.game_manager = GameManager()
+
+        # Инициализируем LLM-роутер
+        init_router(self.llm_provider)
 
         # Настройки чатов
         self._chat_settings: dict[int, ChatSettings] = {}
@@ -190,22 +193,13 @@ class Orchestrator:
             if abuse_result["response_text"] and abuse_result["action"] in ("warning", "strict_warning"):
                 return abuse_result["response_text"]
 
-        # ===== ФАЗА 1.7: МАРШРУТИЗАЦИЯ СКИЛЛОВ =====
-        skill_decision = await skill_router.route(msg)
-        if skill_decision.activated:
-            logger.info(
-                "Skill activated",
-                skill=skill_decision.skill_slug,
-                chat_id=msg.chat_id,
-                confidence=skill_decision.confidence,
-                reason=skill_decision.reason,
-            )
-            # Activate skill session if not already active
-            await skill_router.activate_skill(msg.chat_id, skill_decision.skill_slug)
-            # Delegate to skill handler
-            return await self._handle_skill(msg, skill_decision)
+        # ===== ФАЗА 1.7: LLM-МАРШРУТИЗАЦИЯ =====
+        # LLM-роутер решает: поиск / скилл / ответить / молчать
+        route_decision = await self._llm_route(msg)
+        if route_decision:
+            return route_decision
 
-        # ===== ФАЗА 2: РЕШАЕМ ЧТО ДЕЛАТЬ =====
+        # ===== ФАЗА 2: БЫСТРЫЕ КОМАНДЫ (fast-path) =====
 
         settings_obj = self._get_settings(msg.chat_id)
 
@@ -233,7 +227,7 @@ class Orchestrator:
                 }
                 return level_texts.get(new_censorship.value, "Принял.")
 
-        # 8. Классифицируем сообщение
+        # 8. Классифицируем сообщение (fast-path: behavior_control, game)
         decision = message_router.route(msg)
 
         logger.debug(
@@ -244,23 +238,6 @@ class Orchestrator:
         )
 
         # ===== ФАЗА 3: ДЕЙСТВУЕМ =====
-
-        # 3.5 Web search check — если нужен интернет
-        search_intent = search_intent_detector.detect(msg.text)
-        if search_intent.is_search_needed:
-            logger.info(
-                "Web search triggered",
-                query=search_intent.query,
-                confidence=search_intent.confidence,
-                reason=search_intent.reason,
-            )
-            # Запускаем поиск если intent confidence высокий — независимо от trigger
-            if search_intent.confidence >= 0.8 or trigger_eval.level == ConfidenceLevel.HIGH or msg.is_private:
-                search_response = await search_processor.search_and_answer(search_intent.query)
-                message_router.register_bot_message(msg.telegram_id)
-                if search_response:
-                    return search_response
-                logger.warning("Search returned empty response", query=search_intent.query)
 
         # Behavior control — меняем режим
         if decision.route == MessageRoute.BEHAVIOR_CONTROL:
@@ -335,6 +312,97 @@ class Orchestrator:
                 target_text = f" для user_{target_user_id}"
 
         return f"📝 Запомнил! Напомню{target_text} {time_str}: {content}"
+
+    async def _llm_route(self, msg: NormalizedMessage) -> str | None:
+        """
+        Фаза LLM-маршрутизации.
+
+        LLM решает: поиск / скилл / ответить / молчать.
+        Если решение требует действия — выполняет и возвращает ответ.
+        Если LLM решил "answer_directly" — возвращает None (дальше идёт обычный pipeline).
+        """
+        router = get_router()
+
+        # Собираем доступные скиллы с командами и описаниями
+        all_desc = skill_registry.get_all_descriptions()
+        available_skills = []
+        for slug, desc in all_desc.items():
+            commands = skill_registry.get_skill_command_for_slug(slug)
+            skill_info = {"slug": slug, "description": desc}
+            if commands:
+                skill_info["commands"] = commands
+            available_skills.append(skill_info)
+
+        # Проверяем есть ли активная сессия скилла
+        from src.skill_system.state_manager import skill_state_manager
+        active_skills = await skill_state_manager.get_all_active_skills(msg.chat_id)
+
+        # Вызываем LLM-роутер
+        decision = await router.route(
+            message_text=msg.text,
+            is_private_chat=msg.is_private,
+            has_active_session=bool(active_skills),
+            available_skills=available_skills,
+        )
+
+        logger.debug(
+            "LLM route decision",
+            text=msg.text[:80],
+            action=decision.action,
+            confidence=decision.confidence,
+            reasoning=decision.reasoning[:100],
+        )
+
+        # === ACTION: SEARCH ===
+        if decision.should_search:
+            logger.info(
+                "Web search triggered (LLM)",
+                query=decision.search_query,
+                confidence=decision.confidence,
+                reason=decision.reasoning,
+            )
+            search_response = await search_processor.search_and_answer(decision.search_query)
+            message_router.register_bot_message(msg.telegram_id)
+            if search_response:
+                return search_response
+            logger.warning("Search returned empty response (LLM)", query=decision.search_query)
+            # Если поиск пустой — fallback на обычный ответ
+            return None
+
+        # === ACTION: USE_SKILL ===
+        if decision.should_use_skill:
+            # Проверяем exit-фразу — если да, деактивируем все скиллы
+            if skill_router.contains_exit_phrase(msg.text):
+                await skill_router.deactivate_all_skills(msg.chat_id)
+                logger.info("Skill session exited via LLM route", chat_id=msg.chat_id)
+                return None
+
+            skill_slug = decision.skill_slug
+            await skill_router.activate_skill(msg.chat_id, skill_slug)
+
+            skill_decision = skill_router.SkillDecision.yes(
+                skill_slug=skill_slug,
+                confidence=decision.confidence,
+                reason=decision.reasoning,
+            )
+            logger.info(
+                "Skill activated (LLM)",
+                skill=skill_slug,
+                chat_id=msg.chat_id,
+                confidence=decision.confidence,
+                reason=decision.reasoning,
+            )
+            return await self._handle_skill(msg, skill_decision)
+
+        # === ACTION: STAY_SILENT ===
+        if decision.should_be_silent:
+            logger.debug("LLM decided to stay silent", text=msg.text[:80])
+            return None
+
+        # === ACTION: ANSWER_DIRECTLY ===
+        # LLM решил что бот может ответить — идём дальше по обычному pipeline
+        # (message_router.route() определит direct_call vs session_continuation)
+        return None
 
     async def _generate_response(
         self,

@@ -182,6 +182,15 @@ class SkillRegistry:
         }
         return trigger_map.get(slug, [])
 
+    # Команды которые маппятся на скиллы (для LLM-роутера)
+    SKILL_COMMANDS: dict[str, str] = {
+        "game": "agent_rpg",
+    }
+
+    def get_skill_command_for_slug(self, slug: str) -> list[str]:
+        """Вернуть список команд для скилла."""
+        return [cmd for cmd, s in self.SKILL_COMMANDS.items() if s == slug]
+
     async def activate_skill_by_slug(self, slug: str) -> SkillMetadata | None:
         """Phase 2: Activation — load full SKILL.md for a specific skill.
 

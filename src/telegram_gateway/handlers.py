@@ -156,7 +156,7 @@ async def handle_help(message: Message) -> None:
         "/censorship [strict|moderate|free] — уровень цензуры\n"
         "/vibe — текущий вайб чата\n"
         "/skills — список скиллов\n"
-        "/rpg [start|stop|continue|roll] — RPG Game Master\n\n"
+        "/game [start|stop|continue|status] — RPG Game Master\n\n"
         f"💡 <b>Совет:</b> Просто позови по имени — «{settings.bot_name}, ...» "
         f"или «{settings.bot_aliases[0]}, ...»\n\n"
         f"🗣️ <b>Речью:</b> «заткнись», «будь поактивнее», «сбавь», "
@@ -208,15 +208,6 @@ async def handle_mode(message: Message, command: CommandObject) -> None:
         result = await orchestrator.handle_mode_command(chat_id, new_mode)
     else:
         result = await orchestrator.get_current_mode(chat_id)
-    await _reply(message, result)
-
-
-@router.message(Command("game"))
-async def handle_game(message: Message, command: CommandObject) -> None:
-    """Команда /game."""
-    user_id = message.from_user.id if message.from_user else 0
-    args = (command.args or "").strip().split()
-    result = await orchestrator.handle_game_command(user_id, message.chat.id, args)
     await _reply(message, result)
 
 
@@ -480,9 +471,9 @@ async def handle_skills(message: Message) -> None:
     await _reply(message, result)
 
 
-@router.message(Command("rpg"))
-async def handle_rpg(message: Message, command: CommandObject) -> None:
-    """Команда /rpg — управление RPG скиллом."""
+@router.message(Command("game"))
+async def handle_game(message: Message, command: CommandObject) -> None:
+    """Команда /game — единая игровая команда. Управляет RPG-скиллом."""
     chat_id = message.chat.id
     args = command.args.strip() if command.args else ""
 
@@ -513,16 +504,16 @@ async def handle_rpg(message: Message, command: CommandObject) -> None:
                 lines.append(f"⚔️ {char['name']} (HP: {hp.get('current', '?')}/{hp.get('max', '?')})")
             result = "\n".join(lines)
         elif phase == "paused":
-            result = "⏸️ На паузе. /rpg continue"
+            result = "⏸️ На паузе. /game continue"
         else:
-            result = "🏁 Игра завершена. /rpg start для новой"
+            result = "🏁 Игра завершена. /game start для новой"
     else:
         result = (
-            "🎲 <b>RPG команды:</b>\n\n"
-            "/rpg — начать игру (Сессия Ноль)\n"
-            "/rpg stop — закончить\n"
-            "/rpg continue — продолжить после паузы\n"
-            "/rpg status — текущее состояние\n\n"
+            "🎲 <b>Игровые команды:</b>\n\n"
+            "/game — начать игру (Сессия Ноль)\n"
+            "/game stop — закончить\n"
+            "/game continue — продолжить после паузы\n"
+            "/game status — текущее состояние\n\n"
             "Или просто напиши что-нибудь в стиле RPG!"
         )
     await _reply(message, result)
