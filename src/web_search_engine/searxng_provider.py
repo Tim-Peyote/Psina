@@ -41,9 +41,13 @@ class SearXNGProvider(BaseSearchProvider):
                     "language": "ru",
                     "pageno": 1,
                 }
+                headers = {
+                    "X-Forwarded-For": "127.0.0.1",
+                    "X-Real-IP": "127.0.0.1",
+                }
 
                 logger.debug("SearXNG request", url=url, params=params)
-                resp = await client.get(url, params=params)
+                resp = await client.get(url, params=params, headers=headers)
                 resp.raise_for_status()
 
                 data = resp.json()
