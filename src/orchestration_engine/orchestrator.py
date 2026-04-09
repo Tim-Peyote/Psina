@@ -817,6 +817,8 @@ class Orchestrator:
         from src.database.models import (
             MemoryItem, MemorySummary, MemoryExtractionBatch,
             UserProfile, ChatVibeProfile, Message, SkillState,
+            GameSession, GameEvent, SkillEvent, Summary,
+            Reminder,
         )
 
         deleted = {
@@ -827,6 +829,11 @@ class Orchestrator:
             "vibe_profile": 0,
             "messages": 0,
             "skill_states": 0,
+            "game_sessions": 0,
+            "game_events": 0,
+            "skill_events": 0,
+            "summaries": 0,
+            "reminders": 0,
         }
 
         try:
@@ -887,6 +894,49 @@ class Orchestrator:
                 for s in skills:
                     await session.delete(s)
 
+                # 8. Game events (удаляем через session_id, т.к. у GameEvent нет chat_id)
+                # Сначала собираем ID сессий
+                game_session_ids = [gs.id for gs in game_sessions]
+                if game_session_ids:
+                    stmt = select(GameEvent).where(GameEvent.session_id.in_(game_session_ids))
+                    result = await session.execute(stmt)
+                    game_events = list(result.scalars().all())
+                    deleted["game_events"] = len(game_events)
+                    for ge in game_events:
+                        await session.delete(ge)
+
+                # 9. Game sessions
+                deleted["game_sessions"] = len(game_sessions)
+                for gs in game_sessions:
+                    await session.delete(gs)
+
+                # 10. Skill events
+                stmt = select(SkillEvent).where(SkillEvent.chat_id == chat_id)
+                result = await session.execute(stmt)
+                skill_events_list = list(result.scalars().all())
+                deleted["skill_events"] = len(skill_events_list)
+                for se in skill_events_list:
+                    await session.delete(se)
+
+                # 11. Usage stats — НЕ чистим, это глобальная статистика без chat_id
+                # (если нужна очистка — отдельная админ-команда)
+
+                # 12. Summaries
+                stmt = select(Summary).where(Summary.chat_id == chat_id)
+                result = await session.execute(stmt)
+                summaries = list(result.scalars().all())
+                deleted["summaries"] = len(summaries)
+                for su in summaries:
+                    await session.delete(su)
+
+                # 13. Reminders (привязаны к чату)
+                stmt = select(Reminder).where(Reminder.chat_id == chat_id)
+                result = await session.execute(stmt)
+                reminders = list(result.scalars().all())
+                deleted["reminders"] = len(reminders)
+                for r in reminders:
+                    await session.delete(r)
+
                 await session.commit()
 
             total = sum(deleted.values())
@@ -896,7 +946,11 @@ class Orchestrator:
                    f"  • Профили: {deleted.get('user_profiles', 0)}\n" \
                    f"  • Сообщения: {deleted.get('messages', 0)}\n" \
                    f"  • Вайб: {deleted.get('vibe_profile', 0)}\n" \
-                   f"  • Скиллы: {deleted.get('skill_states', 0)}\n\n" \
+                   f"  • Скиллы: {deleted.get('skill_states', 0)}\n" \
+                   f"  • Игры: {deleted.get('game_sessions', 0)} сессий, {deleted.get('game_events', 0)} событий\n" \
+                   f"  • События скиллов: {deleted.get('skill_events', 0)}\n" \
+                   f"  • Саммари: {deleted.get('summaries', 0)}\n" \
+                   f"  • Напоминания: {deleted.get('reminders', 0)}\n\n" \
                    f"Начинаем с чистого листа."
 
         except Exception as e:
