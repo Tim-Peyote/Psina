@@ -55,8 +55,8 @@ class DuckDuckGoProvider(BaseSearchProvider):
                     raw_url = title_tag.get("href", "")
                     snippet = snippet_tag.get_text(strip=True)
 
-                    # DuckDuckGo оборачивает URL: /l/?uddg=REAL_URL или /uddg?uddg=REAL_URL
-                    if raw_url.startswith("/l/?") or raw_url.startswith("/uddg?"):
+                    # DuckDuckGo оборачивает URL: //duckduckgo.com/l/?uddg=REAL_URL или /l/?uddg=REAL_URL
+                    if "/l/?uddg=" in raw_url or raw_url.startswith("/uddg?"):
                         from urllib.parse import parse_qs, unquote, urlparse
                         parsed = urlparse(raw_url)
                         qs = parse_qs(parsed.query)
