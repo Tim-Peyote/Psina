@@ -109,8 +109,6 @@ class LLMRouter:
                 messages=messages,
                 chat_id=0,
                 user_id=0,
-                temperature=0.1,
-                max_tokens=256,
             )
 
             decision = self._parse_response(response, available_skills or [])
