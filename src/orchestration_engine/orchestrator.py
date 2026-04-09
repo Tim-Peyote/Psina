@@ -377,22 +377,39 @@ class Orchestrator:
                 logger.info("Skill session exited via LLM route", chat_id=msg.chat_id)
                 return None
 
-            skill_slug = decision.skill_slug
-            await skill_router.activate_skill(msg.chat_id, skill_slug)
+            try:
+                skill_slug = decision.skill_slug
+                logger.info("skill_debug: before activate_skill", skill=skill_slug, chat_id=msg.chat_id)
+                await skill_router.activate_skill(msg.chat_id, skill_slug)
+                logger.info("skill_debug: after activate_skill", skill=skill_slug)
 
-            skill_decision = skill_router.SkillDecision.yes(
-                skill_slug=skill_slug,
-                confidence=decision.confidence,
-                reason=decision.reasoning,
-            )
-            logger.info(
-                "Skill activated (LLM)",
-                skill=skill_slug,
-                chat_id=msg.chat_id,
-                confidence=decision.confidence,
-                reason=decision.reasoning,
-            )
-            return await self._handle_skill(msg, skill_decision)
+                skill_decision = skill_router.SkillDecision.yes(
+                    skill_slug=skill_slug,
+                    confidence=decision.confidence,
+                    reason=decision.reasoning,
+                )
+                logger.info("skill_debug: SkillDecision created", skill=skill_slug)
+                logger.info(
+                    "Skill activated (LLM)",
+                    skill=skill_slug,
+                    chat_id=msg.chat_id,
+                    confidence=decision.confidence,
+                    reason=decision.reasoning,
+                )
+                logger.info("skill_debug: before _handle_skill", skill=skill_slug)
+                return await self._handle_skill(msg, skill_decision)
+            except Exception as e:
+                import traceback
+                logger.error(
+                    "skill_debug: CRASH in use_skill block",
+                    skill=decision.skill_slug if decision else "unknown",
+                    error_type=type(e).__name__,
+                    error=str(e),
+                    traceback=traceback.format_exc(),
+                    chat_id=msg.chat_id,
+                    user_id=msg.user_id,
+                )
+                raise
 
         # === ACTION: STAY_SILENT ===
         if decision.should_be_silent:
