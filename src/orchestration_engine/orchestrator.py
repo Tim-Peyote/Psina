@@ -897,8 +897,12 @@ class Orchestrator:
                 for s in skills:
                     await session.delete(s)
 
-                # 8. Game events (удаляем через session_id, т.к. у GameEvent нет chat_id)
-                # Сначала собираем ID сессий
+                # 8. Game sessions (сначала загружаем, потом их события)
+                stmt = select(GameSession).where(GameSession.chat_id == chat_id)
+                result = await session.execute(stmt)
+                game_sessions = list(result.scalars().all())
+
+                # 9. Game events (удаляем через session_id)
                 game_session_ids = [gs.id for gs in game_sessions]
                 if game_session_ids:
                     stmt = select(GameEvent).where(GameEvent.session_id.in_(game_session_ids))
@@ -908,12 +912,12 @@ class Orchestrator:
                     for ge in game_events:
                         await session.delete(ge)
 
-                # 9. Game sessions
+                # 10. Game sessions
                 deleted["game_sessions"] = len(game_sessions)
                 for gs in game_sessions:
                     await session.delete(gs)
 
-                # 10. Skill events
+                # 11. Skill events
                 stmt = select(SkillEvent).where(SkillEvent.chat_id == chat_id)
                 result = await session.execute(stmt)
                 skill_events_list = list(result.scalars().all())
@@ -921,10 +925,10 @@ class Orchestrator:
                 for se in skill_events_list:
                     await session.delete(se)
 
-                # 11. Usage stats — НЕ чистим, это глобальная статистика без chat_id
+                # 12. Usage stats — НЕ чистим, это глобальная статистика без chat_id
                 # (если нужна очистка — отдельная админ-команда)
 
-                # 12. Summaries
+                # 13. Summaries
                 stmt = select(Summary).where(Summary.chat_id == chat_id)
                 result = await session.execute(stmt)
                 summaries = list(result.scalars().all())
