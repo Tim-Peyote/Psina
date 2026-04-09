@@ -7,6 +7,7 @@ from src.summarizer.daily import DailySummarizer
 from src.memory_engine.engine import MemoryEngine
 from src.workers.reminders import reminder_manager
 from src.workers.utils import run_async as _run_async
+from src.telegram_gateway.message_postprocessor import message_postprocessor
 from sqlalchemy import select
 
 logger = structlog.get_logger()
@@ -76,7 +77,7 @@ def check_reminders() -> None:
         try:
             for reminder in due:
                 try:
-                    text = reminder.content
+                    reminder_text = reminder.content
                     if reminder.target_user_id:
                         with sync_session_factory() as session:
                             user_stmt = select(User).where(User.id == reminder.target_user_id)
@@ -84,13 +85,15 @@ def check_reminders() -> None:
                             user = user_result.scalar_one_or_none()
                             if user:
                                 mention = f"@{user.username}" if user.username else user.first_name or f"user_{reminder.target_user_id}"
-                                text = f"{mention}, напоминаю: {reminder.content}"
+                                reminder_text = f"{mention}, напоминаю: {reminder.content}"
                             else:
-                                text = f"Напоминание: {reminder.content}"
+                                reminder_text = f"Напоминание: {reminder.content}"
+
+                    formatted_text = message_postprocessor.process(f"⏰ <b>Напоминание:</b>\n\n{reminder_text}")
 
                     await bot.send_message(
                         chat_id=reminder.chat_id,
-                        text=f"⏰ <b>Напоминание:</b>\n\n{text}",
+                        text=formatted_text,
                         parse_mode="HTML",
                     )
 
@@ -134,9 +137,10 @@ def send_proactive_messages() -> None:
                 try:
                     msg = await proactive_engine.check_chat(chat.id)
                     if msg:
+                        formatted_msg = message_postprocessor.process(msg)
                         await bot.send_message(
                             chat_id=chat.id,
-                            text=msg,
+                            text=formatted_msg,
                             parse_mode="HTML",
                         )
                         logger.info("Proactive message sent", chat_id=chat.id, text=msg[:50])

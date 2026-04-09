@@ -17,6 +17,7 @@ from src.llm_adapter.base import LLMProvider, to_openai_messages
 from src.web_search_engine.search_provider_base import SearchResult
 from src.web_search_engine.cache import search_cache
 from src.web_search_engine.search_provider import search_provider
+from src.telegram_gateway.message_postprocessor import message_postprocessor
 
 logger = structlog.get_logger()
 
@@ -99,7 +100,7 @@ class SearchProcessor:
         try:
             response = await self._llm.generate_response(messages=messages)
             logger.info("Search answer generated", query=query, answer_len=len(response))
-            return response
+            return message_postprocessor.process(response)
         except Exception as e:
             logger.error(
                 "LLM failed to generate search answer, returning raw results",
@@ -109,7 +110,8 @@ class SearchProcessor:
             )
             # Fallback — просто вернём сырые результаты
             snippets = [f"• {r.snippet}" for r in results[:3]]
-            return f"По запросу «{query}»:\n\n" + "\n".join(snippets) + f"\n\n(Источник: {results[0].source})"
+            fallback = f"По запросу «{query}»:\n\n" + "\n".join(snippets) + f"\n\n(Источник: {results[0].source})"
+            return message_postprocessor.process(fallback)
 
     def _check_limits(self) -> bool:
         """Проверить лимиты."""

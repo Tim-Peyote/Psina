@@ -26,6 +26,7 @@ from src.orchestration_engine.vibe_adapter import vibe_adapter
 from src.orchestration_engine.message_router import message_router
 from src.orchestration_engine.reaction_engine import reaction_engine
 from src.web_search_engine.processor import search_processor
+from src.telegram_gateway.message_postprocessor import message_postprocessor
 
 logger = structlog.get_logger()
 
@@ -37,6 +38,9 @@ async def _reply(message: Message, text: str, reply_to: int | None = None) -> No
     """Отправить ответ и зарегистрировать ID для reply detection."""
     import re
     from src.context_tracker.tracker import context_tracker
+
+    # Постпроцессинг — нормализуем HTML, отступы, списки, URL
+    formatted_text = message_postprocessor.process(text)
 
     def convert_mentions(t):
         """Convert @username to HTML mention if we know the user_id.
@@ -53,7 +57,7 @@ async def _reply(message: Message, text: str, reply_to: int | None = None) -> No
 
         return re.sub(r'@(\w+)', replace_mention, t)
 
-    formatted_text = convert_mentions(text)
+    formatted_text = convert_mentions(formatted_text)
 
     sent = await message.answer(
         formatted_text,
@@ -351,6 +355,9 @@ async def _send_with_typing(message: Message, response: str, reply_to: int | Non
     """Send response with natural typing simulation and optional message splitting."""
     bot = message.bot
 
+    # Постпроцессинг перед отправкой
+    response = message_postprocessor.process(response)
+
     # Show typing indicator
     if bot:
         try:
@@ -362,18 +369,8 @@ async def _send_with_typing(message: Message, response: str, reply_to: int | Non
     delay = min(1.0 + len(response) / 500, 3.0) + random.uniform(0, 0.5)
     await asyncio.sleep(delay)
 
-    # Decide if we should split into multiple messages
-    # Split on double newlines if response is long enough and random chance
-    parts = []
-    if len(response) > 200 and random.random() < 0.3:
-        # Try splitting on double newline
-        chunks = response.split("\n\n", 2)
-        if len(chunks) >= 2 and all(len(c.strip()) > 20 for c in chunks[:2]):
-            parts = [c.strip() for c in chunks if c.strip()]
-        else:
-            parts = [response]
-    else:
-        parts = [response]
+    # Умная разбивка на части через постпроцессор
+    parts = message_postprocessor.split_message(response)
 
     # Send first part as reply
     await _reply(message, parts[0], reply_to=reply_to)
@@ -439,7 +436,19 @@ async def bot_added_to_chat(event: ChatMemberUpdated) -> None:
     )
 
     try:
-        await event.bot.send_message(chat.id, welcome_text, parse_mode="HTML")
+        # Создаём фейковый Message для использования _reply
+        from aiogram.types import Message as FakeMessage
+        class FakeMessage:
+            def __init__(self, bot_obj, chat_id):
+                self.bot = bot_obj
+                self.chat = type('obj', (object,), {'id': chat_id})()
+                self.message_id = None
+            async def answer(self, text, reply_to_message_id=None, parse_mode=None):
+                sent = await self.bot.send_message(self.chat.id, text, parse_mode=parse_mode)
+                return type('obj', (object,), {'message_id': sent.message_id})()
+
+        fake_msg = FakeMessage(event.bot, chat.id)
+        await _reply(fake_msg, welcome_text)
     except Exception:
         logger.exception("Failed to send welcome message")
 
