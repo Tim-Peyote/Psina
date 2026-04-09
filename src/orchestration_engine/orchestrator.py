@@ -601,48 +601,75 @@ class Orchestrator:
         decision,  # SkillDecision type
     ) -> str | None:
         """Delegate message processing to an active skill handler."""
+        import traceback as tb_module
+
         skill_slug = decision.skill_slug
         if not skill_slug:
             return None
 
-        # Activate skill (load full SKILL.md)
-        skill = await skill_registry.activate_skill_by_slug(skill_slug)
-
-        # Get handler (ExecutableSkill module or PromptOnlySkill function)
-        handler = skill_registry.get_skill_handler(skill_slug)
-        if not handler:
-            logger.warning("No handler for skill", skill=skill_slug)
-            # Fallback: deactivate skill session, let normal pipeline handle
-            await skill_router.deactivate_skill(msg.chat_id, skill_slug)
-            return None
-
+        stage = "unknown"
         try:
+            # Stage 1: Activate skill (load full SKILL.md)
+            stage = "activate"
+            logger.info("Skill activation start", skill=skill_slug, chat_id=msg.chat_id, user_id=msg.user_id)
+            skill = await skill_registry.activate_skill_by_slug(skill_slug)
+            if not skill:
+                logger.error("Skill not found", skill=skill_slug, stage=stage)
+                await skill_router.deactivate_skill(msg.chat_id, skill_slug)
+                return "Не могу запустить навык. Попробуй ещё раз."
+
+            # Stage 2: Get handler
+            stage = "get_handler"
+            logger.debug("Skill handler resolution", skill=skill_slug, stage=stage)
+            handler = skill_registry.get_skill_handler(skill_slug)
+            if not handler:
+                logger.error("No handler for skill", skill=skill_slug, stage=stage)
+                await skill_router.deactivate_skill(msg.chat_id, skill_slug)
+                return "Не могу запустить навык. Попробуй ещё раз."
+
+            handler_type = "custom" if hasattr(handler, "process_message") else "default"
+            logger.debug("Skill handler ready", skill=skill_slug, handler_type=handler_type, stage=stage)
+
+            # Stage 3: Execute handler
+            stage = "execute"
+            logger.debug("Skill handler execution start", skill=skill_slug, handler_type=handler_type, chat_id=msg.chat_id)
+
             # PromptOnlySkill: default_handler(skill, msg, chat_id, user_id)
             # ExecutableSkill: handler.process_message(msg, chat_id, user_id)
             if callable(handler) and not hasattr(handler, "process_message"):
-                # Default handler (function)
-                return await handler(skill, msg, msg.chat_id, msg.user_id)
+                response = await handler(skill, msg, msg.chat_id, msg.user_id)
             else:
-                # Custom handler (module with process_message)
-                return await handler.process_message(msg, msg.chat_id, msg.user_id)
+                response = await handler.process_message(msg, msg.chat_id, msg.user_id)
+
+            logger.debug("Skill handler execution done", skill=skill_slug, response_len=len(response) if response else 0)
+            return response
+
         except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            logger.error("Skill handler failed: %s\n%s", e, tb, skill=skill_slug)
-            # Store error for debug endpoint
+            tb = tb_module.format_exc()
+            logger.error(
+                "Skill handler failed",
+                skill=skill_slug,
+                stage=stage,
+                error_type=type(e).__name__,
+                error=str(e),
+                traceback=tb,
+                chat_id=msg.chat_id,
+                user_id=msg.user_id,
+            )
             self._last_skill_error = {
                 "skill": skill_slug,
+                "stage": stage,
                 "error": str(e),
+                "error_type": type(e).__name__,
                 "traceback": tb,
                 "chat_id": msg.chat_id,
             }
-            # CRITICAL: Deactivate skill session so subsequent messages
-            # don't get stuck in a broken skill loop
-            await skill_router.deactivate_skill(msg.chat_id, skill_slug)
+            try:
+                await skill_router.deactivate_skill(msg.chat_id, skill_slug)
+            except Exception:
+                logger.debug("Failed to deactivate skill after error", skill=skill_slug)
 
-            # Fallback: let normal pipeline handle the message instead of
-            # returning a generic error. Bot will respond naturally.
-            # We re-process through the normal response pipeline.
+            # Fallback: normal response pipeline instead of silence
             context = context_tracker.get_context_for_message(msg)
             return await self._generate_response(msg, context, self._fallback_decision(msg))
 
