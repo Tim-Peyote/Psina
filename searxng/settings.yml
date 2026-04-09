@@ -1,8 +1,11 @@
-use_settings:
-  use_secure_cookie: false
-  method: "POST"
+use_formats:
+  - html
+  - json
 
 search:
+  safe_search: 0
+  autocomplete: "google"
+  default_lang: "auto"
   formats:
     - html
     - json
@@ -10,7 +13,7 @@ search:
 server:
   port: 8080
   bind_address: "0.0.0.0"
-  secret_key: "zalutka_searxng_secret_change_me"
+  secret_key: "zalutka_secret_key_change_me_in_production"
   limiter: false
   image_proxy: false
 
@@ -18,26 +21,21 @@ engines:
   - name: google
     engine: google
     shortcut: g
-    disabled: false
 
   - name: bing
     engine: bing
     shortcut: b
-    disabled: false
 
   - name: duckduckgo
     engine: duckduckgo
     shortcut: ddg
-    disabled: false
 
   - name: wikipedia
     engine: wikipedia
     shortcut: wp
-    disabled: false
 
 outgoing:
-  request_timeout: 10
-  max_request_timeout: 30
-  useragent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+  request_timeout: 10.0
+  max_request_timeout: 30.0
   pool_connections: 10
   pool_maxsize: 10
