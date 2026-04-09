@@ -29,6 +29,7 @@ from src.orchestration_engine.message_router import message_router, MessageRoute
 from src.orchestration_engine.session_manager import session_manager
 from src.orchestration_engine.anti_chaos import anti_chaos
 from src.orchestration_engine.trigger_system import trigger_system, ConfidenceLevel
+from src.skill_system.router import SkillDecision as SkillDecisionClass
 from src.orchestration_engine.knowledge_analyzer import knowledge_analyzer
 from src.orchestration_engine.vibe_adapter import vibe_adapter
 from src.orchestration_engine.censorship_manager import censorship_manager
@@ -383,7 +384,7 @@ class Orchestrator:
                 await skill_router.activate_skill(msg.chat_id, skill_slug)
                 logger.info("skill_debug: after activate_skill", skill=skill_slug)
 
-                skill_decision = skill_router.SkillDecision.yes(
+                skill_decision = SkillDecisionClass.yes(
                     skill_slug=skill_slug,
                     confidence=decision.confidence,
                     reason=decision.reasoning,
