@@ -25,6 +25,7 @@ services:
     image: searxng/searxng:latest
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
+      - SEARXNG_LIMITER=false
     healthcheck:
       test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/healthz || exit 1"]
       interval: 10s
