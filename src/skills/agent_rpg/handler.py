@@ -147,6 +147,60 @@ async def process_message(
 # SESSION ZERO — Step-by-step campaign initialization
 # =====================================================================
 
+_STEP_REASK = {
+    1: "<b>Шаг 1/5: Мир и Премьера</b>\n\nВ каком мире происходит наша история? Это существующая вселенная или что-то своё?",
+    2: "<b>Шаг 2/5: Фракции и Силы</b>\n\nКакие основные силы действуют в этом мире? Назови хотя бы две конфликтующие фракции.",
+    3: "<b>Шаг 3/5: Создание Персонажа</b>\n\nРасскажи о своём герое: имя, архетип, мотивация.",
+    4: "<b>Шаг 4/5: Система</b>\n\nКак разрешаем действия? (d20, pbta, d100 или freeform)",
+    5: "<b>Шаг 5/5: Границы и Тон</b>\n\nКакой тон нравится? Есть ли запрещённые темы?",
+}
+
+_CLASSIFY_SYSTEM = (
+    "You classify messages during RPG session setup. "
+    "Reply with ONE word: answer / complaint / exit / chatter\n\n"
+    "answer = attempting to answer the current setup question\n"
+    "complaint = complaining about the bot, process, or asking meta-questions\n"
+    "exit = wants to stop/cancel/leave the session\n"
+    "chatter = casual chat, unrelated to setup"
+)
+
+async def _classify_session_zero_message(text: str, current_step: int) -> str:
+    """Classify user message in Session Zero using LLM understanding of context."""
+    reask_text = _STEP_REASK.get(current_step, "session setup")
+    # Extract just the question part
+    question = reask_text.split("\n\n")[-1] if "\n\n" in reask_text else "continue setup"
+
+    llm = LLMProvider.get_provider()
+    user_msg = (
+        f"Current setup question: \"{question}\"\n"
+        f"Player message: \"{text[:200]}\"\n\n"
+        f"Classify: answer / complaint / exit / chatter"
+    )
+
+    try:
+        response = await llm.generate_response(
+            messages=[
+                {"role": "system", "content": _CLASSIFY_SYSTEM},
+                {"role": "user", "content": user_msg},
+            ],
+            chat_id=0,
+            user_id=0,
+        )
+        resp = response.strip().lower()
+        if "answer" in resp:
+            return "answer"
+        elif "complaint" in resp:
+            return "complaint"
+        elif "exit" in resp or "quit" in resp or "stop" in resp:
+            return "exit"
+        elif "chatter" in resp:
+            return "chatter"
+    except Exception:
+        logger.debug("Session zero classification failed, defaulting to answer")
+
+    # Default: treat as answer (backward compatible, safe)
+    return "answer"
+
 async def _handle_session_zero(
     msg: NormalizedMessage,
     state: dict,
@@ -159,8 +213,26 @@ async def _handle_session_zero(
     world = state.setdefault("world", {})
     characters = state.setdefault("characters", {})
     text = msg.text.strip()
-    
+
     logger.debug("rpg.session_zero.entry", chat_id=chat_id, user_id=user_id, step=step, has_setting=bool(world.get("setting")))
+
+    # Classify the message before processing
+    if step >= 1:
+        classification = await _classify_session_zero_message(text, step)
+        logger.info("rpg.session_zero.classified", step=step, classification=classification, text=text[:100])
+
+        # Exit request
+        if classification == "exit":
+            state["phase"] = "ended"
+            return "🏁 Сессия Ноль прервана. Скажи «давай в DnD» если захочешь начать заново."
+
+        # Complaint or chatter — acknowledge but DON'T advance step
+        if classification in ("complaint", "chatter"):
+            prefix = "Ладно, услышал. Но давай вернёмся к настройке —" if classification == "complaint" else "Хм, это не совсем про настройку. Давай вернёмся —"
+            reask = _STEP_REASK.get(step, "Настройку надо начать сначала. Скажи «давай в DnD».")
+            return f"{prefix}\n\n{reask}"
+
+        # classification == "answer" → fall through to normal processing
 
     # SAFEGUARD: If state looks corrupted (past step 1 but no world data),
     # reset to step 0. Note: step 1 hasn't set world.setting yet, so only
