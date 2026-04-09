@@ -1,11 +1,12 @@
 """
-Web Search Engine — поиск через SearXNG.
+Web Search Engine — поиск через DuckDuckGo HTML.
 
 Пайплайн:
-  message → intent_detector → search_processor → SearXNGProvider → LLM → ответ
+  message → intent_detector → search_processor → DuckDuckGoProvider → LLM → ответ
 
 Компоненты:
-- search_provider: SearXNG provider (единственный)
+- duckduckgo_provider: httpx GET к html.duckduckgo.com + BeautifulSoup
+- search_provider: реестр провайдеров
 - processor: пайплайн поиска + LLM ответ
 - intent_detector: детекция когда нужен поиск
 - cache: кеш результатов (in-memory, TTL)

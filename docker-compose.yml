@@ -21,18 +21,6 @@ services:
       timeout: 3s
       retries: 5
 
-  searxng:
-    image: searxng/searxng:latest
-    environment:
-      - SEARXNG_BASE_URL=http://searxng:8080/
-      - SEARXNG_LIMITER=false
-    healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   bot:
     build: .
     env_file: .env
@@ -40,8 +28,6 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      searxng:
         condition: service_healthy
     command: python -m src.main
     restart: unless-stopped
@@ -53,8 +39,6 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      searxng:
         condition: service_healthy
     command: celery -A src.workers.celery_app worker --loglevel=info --concurrency=4
     restart: unless-stopped
