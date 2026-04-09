@@ -97,12 +97,15 @@ class SearchIntentDetector:
         for reason, pattern, base_score in self._search_patterns:
             match = pattern.search(text)
             if match:
-                # Для явного поиска ("найди X") — берём группу
+                # Для явного поиска ("найди X") — берём только группу
                 # Для остальных — весь запрос целиком
                 if reason == "explicit_search":
                     query = match.group(1).strip()
                 else:
                     query = text.strip()
+
+                # Чистим query от мусора
+                query = self._clean_search_query(query)
 
                 if base_score > best_score:
                     best_score = base_score
@@ -120,6 +123,22 @@ class SearchIntentDetector:
             logger.debug("Search intent detected", text=text[:80], confidence=best_score, query=best_query, reason=best_reason)
 
         return result
+
+    def _clean_search_query(self, query: str) -> str:
+        """Убрать из запроса мусорные слова для поисковика."""
+        # Убираем обращения к боту
+        query = re.sub(r'^(?:бот|псина|пёс|пес|песик|пёсик)[\s,!:;]+', '', query, flags=re.IGNORECASE)
+        # Убираем "в интернете", "информацию", "информация"
+        query = re.sub(r'\s*(?:в\s+интернете|информацию?|инфо)\s*', ' ', query, flags=re.IGNORECASE)
+        # Убираем "пожалуйста", "плиз"
+        query = re.sub(r'\s*(?:пожалуйста|плиз|pls)\s*', ' ', query, flags=re.IGNORECASE)
+        # Убираем "найди", "поищи" если остались
+        query = re.sub(r'^(?:найди|поищи|погугли|загугли|гугл)\s*', '', query, flags=re.IGNORECASE)
+        # Убираем "мне", "мне нужно", "мне надо"
+        query = re.sub(r'\s*(?:мне\s+(?:нужно|надо|хочется))\s*', ' ', query, flags=re.IGNORECASE)
+        # Чистим лишние пробелы
+        query = ' '.join(query.split())
+        return query
 
 
 search_intent_detector = SearchIntentDetector()

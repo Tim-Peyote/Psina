@@ -31,7 +31,6 @@ class DuckDuckGoProvider(BaseSearchProvider):
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout,
-                follow_redirects=True,
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -53,26 +52,33 @@ class DuckDuckGoProvider(BaseSearchProvider):
                         continue
 
                     title = title_tag.get_text(strip=True)
-                    url = title_tag.get("href", "")
-                    # DuckDuckGo оборачивает URL в редирект, извлекаем настоящий
-                    if url.startswith("/uddg?"):
-                        from urllib.parse import parse_qs, urlparse
-                        parsed = urlparse(url)
-                        qs = parse_qs(parsed.query)
-                        if "uddg" in qs:
-                            url = qs["uddg"][0]
-
+                    raw_url = title_tag.get("href", "")
                     snippet = snippet_tag.get_text(strip=True)
 
-                    if title and url:
+                    # DuckDuckGo оборачивает URL: /uddg?uddg=REAL_URL
+                    if raw_url.startswith("/uddg?"):
+                        from urllib.parse import parse_qs, unquote, urlparse
+                        parsed = urlparse(raw_url)
+                        qs = parse_qs(parsed.query)
+                        if "uddg" in qs:
+                            raw_url = unquote(qs["uddg"][0])
+                        else:
+                            logger.debug("No uddg param in redirect URL", raw_url=raw_url)
+                            continue
+
+                    logger.debug("Extracted result", title=title[:60], url=raw_url)
+
+                    if title and raw_url and raw_url.startswith("http"):
                         results.append(
                             SearchResult(
                                 title=title,
-                                url=url,
+                                url=raw_url,
                                 snippet=snippet,
                                 source="DuckDuckGo",
                             )
                         )
+                    else:
+                        logger.debug("Skipping result", title=title[:60], url=raw_url[:80])
 
                 if results:
                     logger.info("DuckDuckGo search done", query=query, results=len(results))
