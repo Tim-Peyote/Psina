@@ -1,5 +1,8 @@
 from celery import Celery
 
+# MUST be first: register LLM providers before any task uses them
+from src.llm_adapter import registry  # noqa: F401
+
 from src.config import settings
 
 celery_app = Celery(

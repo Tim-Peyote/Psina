@@ -93,10 +93,20 @@ async def main() -> None:
 
     # Run polling and proactive loop concurrently
     proactive_task = asyncio.create_task(_proactive_loop())
-    await asyncio.gather(
-        bot_manager.start_polling(),
-        proactive_task,
-    )
+    try:
+        await asyncio.gather(
+            bot_manager.start_polling(),
+            proactive_task,
+        )
+    except Exception:
+        logger.exception("Main loop crashed")
+    finally:
+        proactive_task.cancel()
+        try:
+            await proactive_task
+        except asyncio.CancelledError:
+            pass
+        await bot_manager.shutdown()
 
 
 async def _proactive_loop(interval: int = 300) -> None:
@@ -172,7 +182,7 @@ async def _proactive_loop(interval: int = 300) -> None:
             await asyncio.sleep(interval)
     finally:
         await bot.session.close()
-        await r.close()
+        await r.aclose()
         logger.info("Proactive loop stopped")
 
 

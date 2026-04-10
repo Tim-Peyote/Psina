@@ -1,7 +1,9 @@
 import structlog
 
+from aiohttp import ClientTimeout
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
 from src.config import settings
@@ -16,6 +18,7 @@ class BotManager:
         self.bot = Bot(
             token=settings.telegram_bot_token,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            session=AiohttpSession(timeout=ClientTimeout(total=60)),
         )
         self.dp = Dispatcher()
         logger.info("BotManager initialized", bot_name=settings.bot_name)
