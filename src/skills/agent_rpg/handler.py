@@ -115,6 +115,19 @@ def _get_active_session(state: dict) -> dict | None:
     return state.get("sessions", {}).get(sid)
 
 
+def _find_incomplete_session(state: dict) -> tuple[str, dict] | None:
+    """Find the most recent incomplete (session_zero or playing) session.
+
+    Returns (session_id, session_dict) or None if all sessions are ended.
+    """
+    sessions = state.get("sessions", {})
+    for sid, s in sessions.items():
+        phase = s.get("phase", "")
+        if phase in ("session_zero", "playing"):
+            return sid, s
+    return None
+
+
 # =====================================================================
 # MANAGEMENT INTENT CLASSIFICATION
 # =====================================================================
@@ -140,15 +153,31 @@ _MGMT_SYSTEM = """Ты — классификатор намерений для 
 """
 
 
-async def _classify_mgmt_intent(text: str, has_active: bool, in_players: bool) -> dict:
+async def _classify_mgmt_intent(
+    text: str,
+    has_active: bool,
+    in_players: bool,
+    incomplete_session: dict | None = None,
+) -> dict:
     """Classify what user wants to do with RPG sessions."""
     llm = LLMProvider.get_provider()
-    context = f"Активная игра: {'да' if has_active else 'нет'}. Пользователь {'игрок' if in_players else 'не игрок'}."
+    context_lines = [
+        f"Активная игра: {'да' if has_active else 'нет'}.",
+        f"Пользователь {'игрок' if in_players else 'не игрок'}.",
+    ]
+    if incomplete_session:
+        step = incomplete_session.get("step", 0)
+        name = incomplete_session.get("name", "?")
+        phase = incomplete_session.get("phase", "?")
+        context_lines.append(
+            f"Есть незаконченная сессия «{name}» (фаза: {phase}, шаг: {step}). "
+            f"Если пользователь хочет начать — это может быть resume или new_session."
+        )
     try:
         response = await llm.generate_response(
             messages=[
                 {"role": "system", "content": _MGMT_SYSTEM},
-                {"role": "user", "content": f"{context}\n\nСообщение: {text[:300]}"},
+                {"role": "user", "content": "\n".join(context_lines) + f"\n\nСообщение: {text[:300]}"},
             ],
             chat_id=0,
             user_id=0,
@@ -160,40 +189,6 @@ async def _classify_mgmt_intent(text: str, has_active: bool, in_players: bool) -
         if has_active and in_players:
             return {"action": "game_action", "target_name": None, "target_username": None}
         return {"action": "new_session", "target_name": None, "target_username": None}
-
-
-_EXPLICIT_MGMT_KEYWORDS = [
-    "пауз", "перерыв", "pause",
-    "стоп игра", "стоп сессия", "стоп кампан",
-    "заверш", "конец кампан", "конец игры",
-    "покажи все игры", "покажи кампании", "список кампан", "список игр",
-    "переключись на", "перейди к игре",
-    "удали игру", "удали кампан", "стереть кампан",
-    "выйди из игры", "выхожу из игры", "убери меня", "не хочу играть",
-]
-
-
-def _detect_explicit_mgmt(text: str) -> str | None:
-    """Fast keyword check for explicit management commands during Session Zero.
-
-    Returns the matched action name or None if no explicit command detected.
-    """
-    t = text.lower()
-    for kw in _EXPLICIT_MGMT_KEYWORDS:
-        if kw in t:
-            if "пауз" in kw or "перерыв" in kw or "pause" in kw:
-                return "pause"
-            if "заверш" in kw or "конец" in kw or "стоп" in kw:
-                return "end_session"
-            if "покажи" in kw or "список" in kw:
-                return "list_sessions"
-            if "переключ" in kw or "перейди" in kw:
-                return "switch_session"
-            if "удали" in kw or "стереть" in kw:
-                return "delete_session"
-            if "выйд" in kw or "выхожу" in kw or "убери" in kw or "не хочу играть" in kw:
-                return "remove_player"
-    return None
 
 
 # =====================================================================
@@ -248,19 +243,53 @@ async def _process_message_locked(
             await _save(state, chat_id, phase, msg.text)
             return response
 
-        # Session Zero: direct answer mode — NO LLM classification needed.
-        # The bot asked a question, player answered. Accept the answer and move forward.
-        # Only explicit management commands (pause, stop, etc.) go through the classifier.
+        # Session Zero: LLM classifies each message with full context
         if phase == "session_zero":
-            # Check for explicit management commands first (pause, end, etc.)
-            explicit_mgmt = _detect_explicit_mgmt(text)
-            if explicit_mgmt:
-                intent = await _classify_mgmt_intent(text, has_active=True, in_players=True)
-                response = await _handle_management(
-                    intent.get("action", explicit_mgmt), intent, state, active_session, user_id, chat_id, msg.text,
+            world_info = active_session.get("world", {}).get("setting", "")
+            sz_class = await _classify_sz_message(text, active_session.get("step", 1), world_info)
+
+            if sz_class == "restart":
+                # Reset Session Zero from scratch
+                active_session["step"] = 0
+                active_session["phase"] = "session_zero"
+                active_session["world"] = _new_session(active_session.get("name", "Новая кампания"), user_id)["world"]
+                active_session.setdefault("characters", {}).clear()
+                active_session["npcs"] = {}
+                active_session.setdefault("journal", []).append({"summary": "🔄 Сессия Ноль перезапущена"})
+                session.pop("_sz_chatter_count", None)
+                response = (
+                    "🔄 <b>Сессия Ноль перезапущена</b>\n\n"
+                    "Начинаем с чистого листа.\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "<b>Шаг 1/5: Мир и Премьера</b>\n\n"
+                    "В каком мире происходит наша история? "
+                    "Это существующая вселенная (Cyberpunk 2077, DnD, Мир Тьмы) "
+                    "или что-то своё?\n\n"
+                    "И что является <b>крючком</b> — событием, которое толкает героя в приключение?"
                 )
+            elif sz_class == "pause":
+                active_session["phase"] = "paused"
+                response = "⏸️ Настройка на паузе. Напиши «продолжи» когда будешь готов."
+            elif sz_class == "end":
+                active_session["phase"] = "ended"
+                state["active_session_id"] = None
+                response = "🏁 Настройка отменена. Скажи «начни новую игру» когда захочешь."
+            elif sz_class == "chatter":
+                # Not about setup — ask for clarification
+                chatter_count = session.get("_sz_chatter_count", 0)
+                chatter_count += 1
+                session["_sz_chatter_count"] = chatter_count
+
+                if chatter_count >= 2:
+                    reask = _STEP_PROMPTS.get(active_session.get("step", 1), "Давай вернёмся к настройке.")
+                    session["_sz_chatter_count"] = 0
+                    response = f"Не совсем понимаю. Это ответ на мой вопрос или ты про другое?\n\n{reask}"
+                else:
+                    reask = _STEP_PROMPTS.get(active_session.get("step", 1), "Расскажи подробнее.")
+                    response = f"Не совсем понял — это про мир и историю?\n\n{reask}"
             else:
-                # Direct delivery — any non-command text is an answer to the current SZ question
+                # answer — accept the response and move forward
+                session.pop("_sz_chatter_count", None)
                 response = await _handle_session_zero(msg, active_session, chat_id, user_id, system_prompt)
 
         elif phase == "playing":
@@ -296,7 +325,8 @@ async def _process_message_locked(
     # NO ACTIVE SESSION
     # =================================================================
     else:
-        intent = await _classify_mgmt_intent(msg.text, has_active=False, in_players=False)
+        incomplete = _find_incomplete_session(state)
+        intent = await _classify_mgmt_intent(msg.text, has_active=False, in_players=False, incomplete_session=incomplete)
         action = intent.get("action", "new_session")
 
         if action in ("chatter", "game_action"):
@@ -305,12 +335,32 @@ async def _process_message_locked(
             return None
         elif action == "list_sessions":
             response = _list_sessions(state)
-        elif action == "new_session":
-            response = _start_new_session(state, user_id)
         elif action == "switch_session":
             response = _switch_session(state, intent.get("target_name", ""), user_id)
+        elif action == "new_session" or action == "resume":
+            # Check for incomplete sessions — offer to continue
+            incomplete = _find_incomplete_session(state)
+            if incomplete and action == "new_session":
+                sid, s = incomplete
+                step = s.get("step", 0)
+                name = s.get("name", "кампания")
+                response = (
+                    f"⏳ У тебя есть незаконченная <b>«{name}»</b> (Шаг {step}/5).\n\n"
+                    f"Продолжить настройку или начать с нуля?\n\n"
+                    f"• «продолжи» — вернуться к Шагу {step}\n"
+                    f"• «заново» / «новая игра» — начать сначала"
+                )
+            elif incomplete and action == "resume":
+                # Resume the incomplete session
+                state["active_session_id"] = incomplete[0]
+                incomplete[1]["phase"] = "session_zero"
+                step = incomplete[1].get("step", 1)
+                prompt = _STEP_PROMPTS.get(step, "")
+                response = f"▶️ Возвращаемся к настройке.\n\n{prompt}"
+            else:
+                response = _start_new_session(state, user_id)
         else:
-            # No active session for management commands
+            # Other management commands
             sessions = state.get("sessions", {})
             if sessions:
                 response = f"Нет активной игры. Вот твои кампании:\n{_list_sessions(state)}\n\nНапиши «продолжи» или «начни новую игру»."
@@ -473,34 +523,53 @@ _STEP_PROMPTS = {
     5: "<b>Шаг 5/5: Границы и Тон</b>\n\nКакой тон? Есть запрещённые темы?",
 }
 
-_CLASSIFY_SYSTEM = (
-    "Классифицируй сообщение во время настройки RPG. "
-    "Ответь ОДНИМ словом: answer / exit / chatter\n\n"
-    "answer = ответ на текущий вопрос настройки\n"
-    "exit = хочет выйти/отменить\n"
-    "chatter = не по теме настройки"
-)
+_CLASSIFY_SZ_SYSTEM = """Ты — классификатор намерений во время Session Zero (настройка RPG-кампании).
+Бот задаёт вопросы по шагам, пользователь отвечает. Определи намерение.
+
+ВОЗМОЖНЫЕ ОТВЕТЫ (строго одно слово):
+- answer: пользователь отвечает на текущий вопрос настройки
+- restart: хочет начать настройку заново с первого шага (фразы: "начни заново", "давай сначала", "новая игра", "с нуля", "начни с начала")
+- pause: хочет поставить на паузу (фразы: "пауза", "перерыв", "стоп на время")
+- end: хочет отменить настройку (фразы: "стоп", "отмена", "хватит", "выйди")
+- chatter: сообщение НЕ относится к настройке, пользователь говорит про другое
+
+Контекст: бот только что задал конкретный вопрос. Если сообщение похоже на ответ — это answer.
+Если пользователь ждёт начать сначала — restart. Если говорит про другое — chatter.
+
+Ответь СТРОГО одним словом без пояснений: answer | restart | pause | end | chatter
+"""
 
 
-async def _classify_sz_message(text: str, step: int) -> str:
+async def _classify_sz_message(text: str, step: int, world_setting: str = "") -> str:
+    """Classify user message during Session Zero using LLM with full context.
+
+    Returns: answer | restart | pause | end | chatter
+    """
     question = _STEP_PROMPTS.get(step, "").split("\n\n")[-1]
+    context_lines = [f"Текущий шаг: Шаг {step}/5"]
+    context_lines.append(f"Вопрос бота: \"{question}\"")
+    if world_setting:
+        context_lines.append(f"Уже известно о мире: \"{world_setting[:100]}\"")
+    context_lines.append(f"Сообщение пользователя: \"{text[:200]}\"")
+
     llm = LLMProvider.get_provider()
     try:
         response = await llm.generate_response(
             messages=[
-                {"role": "system", "content": _CLASSIFY_SYSTEM},
-                {"role": "user", "content": f"Вопрос: \"{question}\"\nСообщение: \"{text[:200]}\"\nКлассификация:"},
+                {"role": "system", "content": _CLASSIFY_SZ_SYSTEM},
+                {"role": "user", "content": "\n".join(context_lines) + "\n\nКлассификация:"},
             ],
             chat_id=0, user_id=0,
         )
-        r = response.strip().lower()
-        if "exit" in r or "quit" in r:
-            return "exit"
-        if "chatter" in r:
+        r = response.strip().lower().strip(".!").strip()
+        if r in ("answer", "restart", "pause", "end"):
+            return r
+        if "chatter" in r or "нет" in r:
             return "chatter"
-        return "answer"
-    except Exception:
-        return "answer"
+        return "answer"  # Default to accepting the answer
+    except Exception as e:
+        logger.debug("rpg: sz classification failed, defaulting to answer", error=str(e))
+        return "answer"  # Default: accept as answer
 
 
 _ENRICH_WORLD_SYSTEM = """Ты — ассистент Game Master'а. Обогати данные мира RPG.
@@ -613,30 +682,13 @@ async def _handle_session_zero(
     characters = session.setdefault("characters", {})
     text = msg.text.strip()
 
-    # Classify message during Session Zero
-    if step >= 1:
-        classification = await _classify_sz_message(text, step)
-        if classification == "exit":
-            session["phase"] = "ended"
-            return "🏁 Сессия Ноль прервана. Скажи «начни новую игру» когда захочешь."
-        if classification == "chatter":
-            # Instead of blocking, try to accept it anyway but with a soft clarification.
-            # Track consecutive chatter count to detect real off-topic.
-            chatter_count = session.get("_sz_chatter_count", 0)
-            chatter_count += 1
-            session["_sz_chatter_count"] = chatter_count
+    # Note: Classification (answer/restart/pause/end/chatter) is done in
+    # _process_message_locked. This function is called ONLY when classification
+    # was "answer" — so we trust this is a real answer to the current step.
 
-            if chatter_count >= 2:
-                # Two consecutive uncertain messages — ask directly
-                reask = _STEP_PROMPTS.get(step, "Давай вернёмся к настройке.")
-                session["_sz_chatter_count"] = 0
-                return f"Не совсем понимаю. Это ответ на вопрос настройки?\n\n{reask}"
-
-            # First uncertain message — accept but note it
-            # Fall through to process the answer normally
-
-    # Safety guard
+    # Safety guard: if step advanced but world is empty, reset
     if step >= 2 and not world.get("setting"):
+        logger.warning("rpg: step >= 2 but world.setting is empty, resetting to step 0")
         step = 0
         session["step"] = 0
 
