@@ -359,10 +359,12 @@ class Orchestrator:
         # === ACTION: STAY_SILENT ===
         if decision.should_be_silent:
             logger.debug("LLM decided to stay silent", text=msg.text[:80])
-            # High confidence silence = hard stop (don't continue to normal pipeline)
-            if decision.confidence >= 0.8:
+            # High confidence silence — but if there's an active skill session,
+            # don't hard-silence: let the skill handler decide whether to respond.
+            # The skill knows its own context (e.g. Session Zero is waiting for an answer).
+            if decision.confidence >= 0.8 and not active_skills:
                 return ""  # Empty string = hard silence, pipeline stops
-            return None  # Low confidence = let normal pipeline decide
+            return None  # Let normal pipeline / skill handler decide
 
         # === ACTION: ANSWER_DIRECTLY ===
         # LLM решил что бот может ответить — идём дальше по обычному pipeline

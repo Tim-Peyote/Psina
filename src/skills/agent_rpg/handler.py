@@ -162,6 +162,40 @@ async def _classify_mgmt_intent(text: str, has_active: bool, in_players: bool) -
         return {"action": "new_session", "target_name": None, "target_username": None}
 
 
+_EXPLICIT_MGMT_KEYWORDS = [
+    "пауз", "перерыв", "pause",
+    "стоп игра", "стоп сессия", "стоп кампан",
+    "заверш", "конец кампан", "конец игры",
+    "покажи все игры", "покажи кампании", "список кампан", "список игр",
+    "переключись на", "перейди к игре",
+    "удали игру", "удали кампан", "стереть кампан",
+    "выйди из игры", "выхожу из игры", "убери меня", "не хочу играть",
+]
+
+
+def _detect_explicit_mgmt(text: str) -> str | None:
+    """Fast keyword check for explicit management commands during Session Zero.
+
+    Returns the matched action name or None if no explicit command detected.
+    """
+    t = text.lower()
+    for kw in _EXPLICIT_MGMT_KEYWORDS:
+        if kw in t:
+            if "пауз" in kw or "перерыв" in kw or "pause" in kw:
+                return "pause"
+            if "заверш" in kw or "конец" in kw or "стоп" in kw:
+                return "end_session"
+            if "покажи" in kw or "список" in kw:
+                return "list_sessions"
+            if "переключ" in kw or "перейди" in kw:
+                return "switch_session"
+            if "удали" in kw or "стереть" in kw:
+                return "delete_session"
+            if "выйд" in kw or "выхожу" in kw or "убери" in kw or "не хочу играть" in kw:
+                return "remove_player"
+    return None
+
+
 # =====================================================================
 # MAIN ENTRY POINT
 # =====================================================================
@@ -196,62 +230,78 @@ async def _process_message_locked(
     raw_state = await skill_state_manager.get_state("agent_rpg", chat_id, default={})
     raw_state = raw_state if isinstance(raw_state, dict) else {}
     state = _migrate_state(raw_state)
-    # Track if migration happened so we can persist even on return None paths
-    _was_migrated = "sessions" not in raw_state and bool(raw_state)
 
     active_session = _get_active_session(state)
     is_player = active_session is not None and user_id in active_session.get("players", [])
 
-    # Phase: if there's an active game and user is a player — check for game commands first
+    text = msg.text.strip()
+
+    # =================================================================
+    # ACTIVE SESSION: player is in the game
+    # =================================================================
     if active_session and is_player:
         phase = active_session.get("phase", "session_zero")
 
         # Fast-path: explicit game commands (no LLM classification needed)
-        text = msg.text.strip()
         if _is_game_command(text):
             response = await _execute_game_command(text, active_session, user_id, system_prompt)
             await _save(state, chat_id, phase, msg.text)
             return response
 
-        # Classify intent — management vs gameplay
-        intent = await _classify_mgmt_intent(text, has_active=True, in_players=True)
-        action = intent.get("action", "game_action")
-
-        if action == "game_action":
-            if phase == "session_zero":
-                response = await _handle_session_zero(msg, active_session, chat_id, user_id, system_prompt)
-            elif phase == "playing":
-                response = await _handle_playing(msg, active_session, user_id, system_prompt)
-            elif phase == "paused":
-                response = _handle_paused_message(active_session)
+        # Session Zero: direct answer mode — NO LLM classification needed.
+        # The bot asked a question, player answered. Accept the answer and move forward.
+        # Only explicit management commands (pause, stop, etc.) go through the classifier.
+        if phase == "session_zero":
+            # Check for explicit management commands first (pause, end, etc.)
+            explicit_mgmt = _detect_explicit_mgmt(text)
+            if explicit_mgmt:
+                intent = await _classify_mgmt_intent(text, has_active=True, in_players=True)
+                response = await _handle_management(
+                    intent.get("action", explicit_mgmt), intent, state, active_session, user_id, chat_id, msg.text,
+                )
             else:
-                response = "🏁 Эта кампания завершена. Начни новую или переключись на другую."
-        else:
-            response = await _handle_management(action, intent, state, active_session, user_id, chat_id, msg.text)
+                # Direct delivery — any non-command text is an answer to the current SZ question
+                response = await _handle_session_zero(msg, active_session, chat_id, user_id, system_prompt)
 
+        elif phase == "playing":
+            # During playing, classify between management and gameplay
+            intent = await _classify_mgmt_intent(text, has_active=True, in_players=True)
+            action = intent.get("action", "game_action")
+            if action == "game_action":
+                response = await _handle_playing(msg, active_session, user_id, system_prompt)
+            else:
+                response = await _handle_management(action, intent, state, active_session, user_id, chat_id, msg.text)
+
+        elif phase == "paused":
+            response = _handle_paused_message(active_session)
+        else:
+            response = "🏁 Эта кампания завершена. Начни новую или переключись на другую."
+
+    # =================================================================
+    # ACTIVE SESSION: user is NOT a player yet
+    # =================================================================
     elif active_session and not is_player:
-        # Non-player: check if they want to join
         intent = await _classify_mgmt_intent(msg.text, has_active=True, in_players=False)
         action = intent.get("action", "chatter")
         if action == "add_player":
             response = _add_player_to_session(active_session, user_id)
         elif action in ("new_session", "chatter", "game_action"):
             # Not a player, not trying to join → pass through to normal pipeline
-            if _was_migrated:
-                await skill_state_manager.set_state("agent_rpg", chat_id, state)
+            await _save(state, chat_id, active_session.get("phase", "idle"), msg.text)
             return None
         else:
             response = await _handle_management(action, intent, state, active_session, user_id, chat_id, msg.text)
 
+    # =================================================================
+    # NO ACTIVE SESSION
+    # =================================================================
     else:
-        # No active session — classify intent
         intent = await _classify_mgmt_intent(msg.text, has_active=False, in_players=False)
         action = intent.get("action", "new_session")
 
         if action in ("chatter", "game_action"):
             # Not game-related, let normal pipeline handle
-            if _was_migrated:
-                await skill_state_manager.set_state("agent_rpg", chat_id, state)
+            await _save(state, chat_id, "idle", msg.text)
             return None
         elif action == "list_sessions":
             response = _list_sessions(state)
@@ -563,20 +613,35 @@ async def _handle_session_zero(
     characters = session.setdefault("characters", {})
     text = msg.text.strip()
 
-    # Classify message
+    # Classify message during Session Zero
     if step >= 1:
         classification = await _classify_sz_message(text, step)
         if classification == "exit":
             session["phase"] = "ended"
             return "🏁 Сессия Ноль прервана. Скажи «начни новую игру» когда захочешь."
         if classification == "chatter":
-            reask = _STEP_PROMPTS.get(step, "Давай вернёмся к настройке.")
-            return f"Хм, это не про настройку. Давай вернёмся —\n\n{reask}"
+            # Instead of blocking, try to accept it anyway but with a soft clarification.
+            # Track consecutive chatter count to detect real off-topic.
+            chatter_count = session.get("_sz_chatter_count", 0)
+            chatter_count += 1
+            session["_sz_chatter_count"] = chatter_count
+
+            if chatter_count >= 2:
+                # Two consecutive uncertain messages — ask directly
+                reask = _STEP_PROMPTS.get(step, "Давай вернёмся к настройке.")
+                session["_sz_chatter_count"] = 0
+                return f"Не совсем понимаю. Это ответ на вопрос настройки?\n\n{reask}"
+
+            # First uncertain message — accept but note it
+            # Fall through to process the answer normally
 
     # Safety guard
     if step >= 2 and not world.get("setting"):
         step = 0
         session["step"] = 0
+
+    # Reset chatter counter on successful step progression
+    session.pop("_sz_chatter_count", None)
 
     # Multiplayer: new player joining during step 3+
     if step >= 3 and str(user_id) not in characters:
