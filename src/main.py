@@ -27,42 +27,46 @@ async def middleware_update_user_chat(handler, event, data):
     from aiogram.types import Message
     if isinstance(event, Message) and event.from_user:
         from src.database.models import User as UserModel, Chat as ChatModel, ChatType
-        from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert
 
         async with async_session_factory() as session:
             try:
-                # Ensure user
-                result = await session.execute(select(UserModel).where(UserModel.id == event.from_user.id))
-                existing_user = result.scalar_one_or_none()
-                if existing_user:
-                    existing_user.username = event.from_user.username
-                    existing_user.first_name = event.from_user.first_name
-                else:
-                    session.add(
-                        UserModel(
-                            id=event.from_user.id,
-                            username=event.from_user.username,
-                            first_name=event.from_user.first_name,
-                            last_name=event.from_user.last_name,
-                            language_code=event.from_user.language_code,
-                            is_bot=event.from_user.is_bot or False,
-                        )
-                    )
-                # Ensure chat
-                result = await session.execute(select(ChatModel).where(ChatModel.id == event.chat.id))
-                existing_chat = result.scalar_one_or_none()
+                # Upsert user (race-condition safe via ON CONFLICT DO UPDATE)
+                stmt_user = insert(UserModel).values(
+                    id=event.from_user.id,
+                    username=event.from_user.username,
+                    first_name=event.from_user.first_name,
+                    last_name=event.from_user.last_name,
+                    language_code=event.from_user.language_code,
+                    is_bot=event.from_user.is_bot or False,
+                )
+                stmt_user = stmt_user.on_conflict_do_update(
+                    index_elements=[UserModel.id],
+                    set_=dict(
+                        username=event.from_user.username,
+                        first_name=event.from_user.first_name,
+                        last_name=event.from_user.last_name,
+                        language_code=event.from_user.language_code,
+                    ),
+                )
+                await session.execute(stmt_user)
+
+                # Upsert chat (race-condition safe via ON CONFLICT DO UPDATE)
                 chat_type = ChatType(event.chat.type)
-                if existing_chat:
-                    existing_chat.title = event.chat.title
-                    existing_chat.type = chat_type
-                else:
-                    session.add(
-                        ChatModel(
-                            id=event.chat.id,
-                            type=chat_type,
-                            title=event.chat.title,
-                        )
-                    )
+                stmt_chat = insert(ChatModel).values(
+                    id=event.chat.id,
+                    type=chat_type,
+                    title=event.chat.title,
+                )
+                stmt_chat = stmt_chat.on_conflict_do_update(
+                    index_elements=[ChatModel.id],
+                    set_=dict(
+                        title=event.chat.title,
+                        type=chat_type,
+                    ),
+                )
+                await session.execute(stmt_chat)
+
                 await session.commit()
             except Exception:
                 logger.exception("Failed to upsert user/chat")
