@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 from src.config import settings
 
-router = APIRouter()
+router = APIRouter(tags=["settings"])
 
 
 class SettingsResponse(BaseModel):
@@ -19,7 +19,7 @@ class SettingsResponse(BaseModel):
     quiet_hours_end: int
 
 
-@router.get("/", response_model=SettingsResponse)
+@router.get("/", response_model=SettingsResponse, summary="Get current bot settings")
 async def get_settings() -> SettingsResponse:
     return SettingsResponse(
         bot_mode=settings.bot_mode,
@@ -40,7 +40,7 @@ class UpdateModelRequest(BaseModel):
     model: str
 
 
-@router.post("/model")
+@router.post("/model", summary="Switch active LLM provider and model")
 async def update_model(request: UpdateModelRequest) -> dict:
     """Update the active LLM model (runtime only, not persisted to config)."""
     settings.llm_provider = request.provider

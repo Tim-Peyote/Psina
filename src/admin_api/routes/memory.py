@@ -5,7 +5,7 @@ from src.database.session import get_session
 from src.database.models import MemoryItem, MemoryType, MemorySummary, MemoryExtractionBatch
 from sqlalchemy import select, and_, func, text
 
-router = APIRouter()
+router = APIRouter(tags=["memory"])
 
 
 class MemoryItemResponse(BaseModel):
@@ -32,7 +32,7 @@ class MemoryListResponse(BaseModel):
     total: int
 
 
-@router.get("/", response_model=MemoryListResponse)
+@router.get("/", response_model=MemoryListResponse, summary="List memory items")
 async def list_memories(
     chat_id: int | None = Query(None),
     user_id: int | None = Query(None),
@@ -93,7 +93,7 @@ async def list_memories(
         )
 
 
-@router.delete("/{item_id}")
+@router.delete("/{item_id}", summary="Delete a memory item")
 async def delete_memory(item_id: int) -> dict:
     async for session in get_session():
         stmt = select(MemoryItem).where(MemoryItem.id == item_id)
@@ -106,7 +106,7 @@ async def delete_memory(item_id: int) -> dict:
         return {"status": "deleted", "id": item_id}
 
 
-@router.post("/clear")
+@router.post("/clear", summary="Clear memories by chat or user")
 async def clear_memories(
     chat_id: int | None = Query(None),
     user_id: int | None = Query(None),
@@ -150,7 +150,7 @@ class MemorySearchResult(BaseModel):
     frequency: int = 1
 
 
-@router.post("/search", response_model=list[MemorySearchResult])
+@router.post("/search", response_model=list[MemorySearchResult], summary="Search memory (hybrid vector + keyword)")
 async def search_memory(request: MemorySearchRequest) -> list[MemorySearchResult]:
     """Search memory with hybrid vector + keyword approach."""
     from src.memory_services.retrieval_service import retrieval_service
@@ -187,7 +187,7 @@ class MemoryStatsResponse(BaseModel):
     avg_confidence: float
 
 
-@router.get("/stats", response_model=MemoryStatsResponse)
+@router.get("/stats", response_model=MemoryStatsResponse, summary="Memory system statistics")
 async def memory_stats() -> MemoryStatsResponse:
     """Get memory system statistics."""
     async for session in get_session():
@@ -238,7 +238,7 @@ class MemoryLifecycleResult(BaseModel):
     details: dict
 
 
-@router.post("/lifecycle/decay", response_model=MemoryLifecycleResult)
+@router.post("/lifecycle/decay", response_model=MemoryLifecycleResult, summary="Trigger relevance decay")
 async def trigger_decay() -> MemoryLifecycleResult:
     """Manually trigger relevance decay."""
     from src.memory_services.memory_lifecycle import memory_lifecycle
@@ -247,7 +247,7 @@ async def trigger_decay() -> MemoryLifecycleResult:
     return MemoryLifecycleResult(status="success", details=result)
 
 
-@router.post("/lifecycle/cleanup", response_model=MemoryLifecycleResult)
+@router.post("/lifecycle/cleanup", response_model=MemoryLifecycleResult, summary="Trigger expired items cleanup")
 async def trigger_cleanup() -> MemoryLifecycleResult:
     """Manually trigger expired items cleanup."""
     from src.memory_services.memory_lifecycle import memory_lifecycle
@@ -256,7 +256,7 @@ async def trigger_cleanup() -> MemoryLifecycleResult:
     return MemoryLifecycleResult(status="success", details=result)
 
 
-@router.post("/lifecycle/consolidate", response_model=MemoryLifecycleResult)
+@router.post("/lifecycle/consolidate", response_model=MemoryLifecycleResult, summary="Trigger similar items consolidation")
 async def trigger_consolidation() -> MemoryLifecycleResult:
     """Manually trigger similar items consolidation."""
     from src.memory_services.memory_lifecycle import memory_lifecycle
@@ -265,7 +265,7 @@ async def trigger_consolidation() -> MemoryLifecycleResult:
     return MemoryLifecycleResult(status="success", details=result)
 
 
-@router.post("/lifecycle/full", response_model=MemoryLifecycleResult)
+@router.post("/lifecycle/full", response_model=MemoryLifecycleResult, summary="Run full memory lifecycle cleanup")
 async def trigger_full_lifecycle() -> MemoryLifecycleResult:
     """Run full memory lifecycle cleanup."""
     from src.memory_services.memory_lifecycle import memory_lifecycle
@@ -279,7 +279,7 @@ class MemorySummariesResponse(BaseModel):
     total: int
 
 
-@router.get("/summaries", response_model=MemorySummariesResponse)
+@router.get("/summaries", response_model=MemorySummariesResponse, summary="List memory summaries")
 async def list_summaries(
     chat_id: int | None = Query(None),
     limit: int = Query(50, le=200),
@@ -332,7 +332,7 @@ class ExtractionBatchResponse(BaseModel):
     processed_at: str | None
 
 
-@router.get("/extraction-batches", response_model=list[ExtractionBatchResponse])
+@router.get("/extraction-batches", response_model=list[ExtractionBatchResponse], summary="List extraction batches")
 async def list_extraction_batches(
     chat_id: int | None = Query(None),
     status: str | None = Query(None),
@@ -364,7 +364,7 @@ async def list_extraction_batches(
         ]
 
 
-@router.post("/compact", response_model=dict)
+@router.post("/compact", response_model=dict, summary="Trigger memory compaction")
 async def trigger_compaction(chat_id: int | None = Query(None)) -> dict:
     """Manually trigger memory compaction."""
     from src.memory_services.compaction_service import compaction_service
@@ -387,7 +387,7 @@ class ClearChatResponse(BaseModel):
     deleted: dict
 
 
-@router.post("/clear-chat", response_model=ClearChatResponse)
+@router.post("/clear-chat", response_model=ClearChatResponse, summary="Full chat data cleanup")
 async def clear_chat_full(request: ClearChatRequest) -> ClearChatResponse:
     """Полная очистка всех данных конкретного чата.
 
@@ -414,6 +414,7 @@ async def clear_chat_full(request: ClearChatRequest) -> ClearChatResponse:
         "vibe_profile": 0,
         "messages": 0,
         "skill_states": 0,
+        "reminders": 0,
     }
 
     async for session in get_session():
@@ -472,6 +473,15 @@ async def clear_chat_full(request: ClearChatRequest) -> ClearChatResponse:
         deleted["skill_states"] = len(skills)
         for s in skills:
             await session.delete(s)
+
+        # 8. Reminders
+        from src.database.models import Reminder
+        stmt = select(Reminder).where(Reminder.chat_id == chat_id)
+        result = await session.execute(stmt)
+        reminders = list(result.scalars().all())
+        deleted["reminders"] = len(reminders)
+        for r in reminders:
+            await session.delete(r)
 
         await session.commit()
 

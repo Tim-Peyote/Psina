@@ -1,11 +1,24 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from src.database.session import get_session
 from src.database.models import User, UserProfile
-from sqlalchemy import select
+from sqlalchemy import select, func
 
-router = APIRouter()
+router = APIRouter(tags=["users"])
+
+
+class UserInfo(BaseModel):
+    id: int
+    username: str | None
+    first_name: str | None
+    language_code: str | None
+    created_at: str | None
+
+
+class UserListResponse(BaseModel):
+    users: list[UserInfo]
+    total: int
 
 
 class UserProfileResponse(BaseModel):
@@ -18,7 +31,37 @@ class UserProfileResponse(BaseModel):
     summary: str | None
 
 
-@router.get("/{user_id}", response_model=UserProfileResponse)
+@router.get("/", response_model=UserListResponse, summary="List all users")
+async def list_users(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> UserListResponse:
+    """List users with pagination."""
+    async for session in get_session():
+        count_stmt = select(func.count(User.id))
+        result = await session.execute(count_stmt)
+        total = result.scalar() or 0
+
+        stmt = select(User).order_by(User.updated_at.desc()).offset(offset).limit(limit)
+        result = await session.execute(stmt)
+        users = list(result.scalars().all())
+
+        return UserListResponse(
+            users=[
+                UserInfo(
+                    id=u.id,
+                    username=u.username,
+                    first_name=u.first_name,
+                    language_code=u.language_code,
+                    created_at=u.created_at.isoformat() if u.created_at else None,
+                )
+                for u in users
+            ],
+            total=total,
+        )
+
+
+@router.get("/{user_id}", response_model=UserProfileResponse, summary="Get user profile")
 async def get_user_profile(user_id: int, chat_id: int | None = None) -> UserProfileResponse:
     """Get user profile. If chat_id is provided, returns profile for that specific chat."""
     async for session in get_session():
@@ -48,21 +91,3 @@ async def get_user_profile(user_id: int, chat_id: int | None = None) -> UserProf
             interests=profile.interests if profile else None,
             summary=profile.summary if profile else None,
         )
-
-
-@router.get("/")
-async def list_users(limit: int = 50) -> list[dict]:
-    async for session in get_session():
-        stmt = select(User).order_by(User.updated_at.desc()).limit(limit)
-        result = await session.execute(stmt)
-        users = list(result.scalars().all())
-        return [
-            {
-                "id": u.id,
-                "username": u.username,
-                "first_name": u.first_name,
-                "language_code": u.language_code,
-                "created_at": str(u.created_at),
-            }
-            for u in users
-        ]

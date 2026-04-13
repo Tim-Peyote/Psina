@@ -7,7 +7,7 @@ from src.database.session import get_session
 from src.database.models import UsageStat
 from sqlalchemy import select
 
-router = APIRouter()
+router = APIRouter(tags=["usage"])
 
 
 class UsageStatResponse(BaseModel):
@@ -19,7 +19,7 @@ class UsageStatResponse(BaseModel):
     requests_count: int
 
 
-@router.get("/", response_model=list[UsageStatResponse])
+@router.get("/", response_model=list[UsageStatResponse], summary="Get usage statistics")
 async def get_usage_stats(
     days: int = Query(7, ge=1, le=90),
 ) -> list[UsageStatResponse]:

@@ -7,7 +7,7 @@ from src.database.models import Skill, SkillState, SkillEvent
 from src.database.session import get_session
 from sqlalchemy import select, and_, func
 
-router = APIRouter()
+router = APIRouter(tags=["skills"])
 
 
 class SkillResponse(BaseModel):
@@ -20,7 +20,7 @@ class SkillResponse(BaseModel):
     created_at: str | None
 
 
-@router.get("/", response_model=list[SkillResponse])
+@router.get("/", response_model=list[SkillResponse], summary="List all installed skills")
 async def list_skills(include_inactive: bool = False) -> list[SkillResponse]:
     """List all installed skills."""
     skills = await skill_registry.get_all_skills(include_inactive=include_inactive)
@@ -38,32 +38,34 @@ async def list_skills(include_inactive: bool = False) -> list[SkillResponse]:
     ]
 
 
-@router.post("/install")
-async def install_skill(
-    slug: str,
-    name: str,
-    description: str,
-    system_prompt: str,
-    triggers: list[str] | None = None,
-    version: str = "1.0.0",
-) -> dict:
-    """Install a new skill."""
-    existing = skill_registry.get_skill(slug)
+class InstallSkillRequest(BaseModel):
+    slug: str
+    name: str
+    description: str
+    system_prompt: str
+    triggers: list[str] | None = None
+    version: str = "1.0.0"
+
+
+@router.post("/install", summary="Install a new skill")
+async def install_skill(request: InstallSkillRequest) -> dict:
+    """Install a new skill into the system."""
+    existing = skill_registry.get_skill(request.slug)
     if existing:
-        raise HTTPException(status_code=409, detail=f"Skill '{slug}' already installed")
+        raise HTTPException(status_code=409, detail=f"Skill '{request.slug}' already installed")
 
     await skill_registry.register_skill(
-        slug=slug,
-        name=name,
-        description=description,
-        system_prompt=system_prompt,
-        triggers=triggers or [],
-        version=version,
+        slug=request.slug,
+        name=request.name,
+        description=request.description,
+        system_prompt=request.system_prompt,
+        triggers=request.triggers or [],
+        version=request.version,
     )
-    return {"status": "installed", "slug": slug}
+    return {"status": "installed", "slug": request.slug}
 
 
-@router.delete("/{slug}")
+@router.delete("/{slug}", summary="Uninstall a skill")
 async def uninstall_skill(slug: str) -> dict:
     """Uninstall a skill."""
     result = await skill_registry.unregister_skill(slug)
@@ -72,7 +74,7 @@ async def uninstall_skill(slug: str) -> dict:
     return {"status": "uninstalled", "slug": slug}
 
 
-@router.post("/{slug}/toggle")
+@router.post("/{slug}/toggle", summary="Enable or disable a skill")
 async def toggle_skill(slug: str, active: bool = True) -> dict:
     """Enable or disable a skill."""
     result = await skill_registry.toggle_skill(slug, active)
@@ -92,9 +94,9 @@ class SkillStateResponse(BaseModel):
     last_activity_at: str | None
 
 
-@router.get("/{slug}/state", response_model=list[SkillStateResponse])
+@router.get("/{slug}/state", response_model=list[SkillStateResponse], summary="Get skill state instances")
 async def get_skill_state(slug: str) -> list[SkillStateResponse]:
-    """Get all active state instances for a skill."""
+    """Get all state instances for a skill."""
     async for session in get_session():
         stmt = select(SkillState).where(
             SkillState.skill_slug == slug
@@ -114,7 +116,7 @@ async def get_skill_state(slug: str) -> list[SkillStateResponse]:
         ]
 
 
-@router.delete("/{slug}/state/{chat_id}")
+@router.delete("/{slug}/state/{chat_id}", summary="Delete skill state for a chat (reset)")
 async def delete_skill_state(slug: str, chat_id: int) -> dict:
     """Delete skill state for a chat (reset)."""
     result = await skill_state_manager.delete_state(slug, chat_id)
@@ -135,7 +137,7 @@ class SkillEventResponse(BaseModel):
     created_at: str | None
 
 
-@router.get("/events", response_model=list[SkillEventResponse])
+@router.get("/events", response_model=list[SkillEventResponse], summary="List skill events")
 async def list_skill_events(
     slug: str | None = Query(None),
     chat_id: int | None = Query(None),

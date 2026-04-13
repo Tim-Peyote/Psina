@@ -2,6 +2,7 @@
 Authentication dependency for Admin API.
 """
 
+import hmac
 import structlog
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -16,9 +17,9 @@ _bearer_scheme = HTTPBearer()
 async def verify_admin_token(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
 ) -> str:
-    """Validate Bearer token against admin_api_secret."""
-    if credentials.credentials != settings.admin_api_secret:
-        logger.warning("admin_auth_failed", hint="invalid token")
+    """Validate Bearer token against admin_api_secret (timing-safe comparison)."""
+    if not hmac.compare_digest(credentials.credentials, settings.admin_api_secret):
+        logger.warning("admin_auth_failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",
