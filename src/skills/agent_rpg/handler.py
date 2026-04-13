@@ -1,10 +1,34 @@
-"""RPG Skill handler — thin wrapper around SKILL.md.
+"""RPG Skill handler — multi-session Game Master.
 
-Loads full SKILL.md instructions on activation, delegates to LLM,
-and saves state. All game rules live in SKILL.md, not in code.
+v2: Supports multiple parallel campaigns per chat, player lists,
+LLM-based session management (no hardcoded commands), enriched Session Zero.
+
+State structure (SkillState.state_json):
+{
+  "active_session_id": "uuid4" | null,
+  "sessions": {
+    "uuid4": {
+      "name": "Campaign name",
+      "phase": "session_zero|playing|paused|ended",
+      "step": 0-5,
+      "system": "d20|pbta|d100|freeform",
+      "created_by": user_id,
+      "players": [user_id, ...],
+      "world": {...},
+      "characters": {str(user_id): {...}},
+      "npcs": {},
+      "combat": null,
+      "journal": [],
+      "loot_table": []
+    }
+  }
+}
 """
 
 from __future__ import annotations
+
+import json
+import uuid
 
 import structlog
 
@@ -16,28 +40,131 @@ from src.llm_adapter.base import LLMProvider
 
 logger = structlog.get_logger()
 
-DEFAULT_CAMPAIGN_STATE = {
-    "phase": "session_zero",
-    "step": 0,
-    "system": "",
-    "world": {
-        "location": "Начальная локация",
-        "time": "08:00",
-        "weather": "Ясно",
-        "setting": "",
-        "tone": "",
-        "hook": "",
-        "factions": [],
-        "flags": {},
-        "clocks": {},
-    },
-    "characters": {},
-    "npcs": {},
-    "combat": None,
-    "journal": [],
-    "loot_table": [],
-}
+# =====================================================================
+# DEFAULT STATE TEMPLATES
+# =====================================================================
 
+def _new_session(name: str, created_by: int) -> dict:
+    return {
+        "name": name,
+        "phase": "session_zero",
+        "step": 0,
+        "system": "",
+        "created_by": created_by,
+        "players": [created_by],
+        "world": {
+            "location": "Начальная локация",
+            "time": "08:00",
+            "weather": "Ясно",
+            "setting": "",
+            "tone": "",
+            "hook": "",
+            "factions": [],
+            "flags": {},
+            "clocks": {},
+            "atmosphere": "",
+            "initial_scene": "",
+        },
+        "characters": {},
+        "npcs": {},
+        "combat": None,
+        "journal": [],
+        "loot_table": [],
+    }
+
+
+def _migrate_state(state: dict) -> dict:
+    """Migrate old flat state to new multi-session format."""
+    if "sessions" in state:
+        return state  # Already new format
+
+    # Old format: flat dict with phase/step/world/characters
+    if "phase" in state or "world" in state:
+        logger.info("rpg: migrating old flat state to multi-session format")
+        old_session = {
+            "name": "Старая кампания",
+            "phase": state.get("phase", "session_zero"),
+            "step": state.get("step", 0),
+            "system": state.get("system", ""),
+            "created_by": 0,
+            "players": list(state.get("characters", {}).keys()),
+            "world": state.get("world", {}),
+            "characters": {str(k): v for k, v in state.get("characters", {}).items()},
+            "npcs": state.get("npcs", {}),
+            "combat": state.get("combat"),
+            "journal": state.get("journal", []),
+            "loot_table": state.get("loot_table", []),
+        }
+        # Convert player ids back to int
+        old_session["players"] = [
+            int(uid) for uid in old_session["players"] if str(uid).lstrip("-").isdigit()
+        ]
+        session_id = str(uuid.uuid4())[:8]
+        return {
+            "active_session_id": session_id,
+            "sessions": {session_id: old_session},
+        }
+
+    return {"active_session_id": None, "sessions": {}}
+
+
+def _get_active_session(state: dict) -> dict | None:
+    sid = state.get("active_session_id")
+    if not sid:
+        return None
+    return state.get("sessions", {}).get(sid)
+
+
+# =====================================================================
+# MANAGEMENT INTENT CLASSIFICATION
+# =====================================================================
+
+_MGMT_SYSTEM = """Ты — классификатор намерений для менеджера RPG-сессий.
+Определи что хочет пользователь.
+
+ДЕЙСТВИЯ:
+- new_session: начать новую игру (фразы: начни игру, давай в DnD, хочу сыграть, начнём кампанию)
+- resume: продолжить активную игру (фразы: продолжи, где мы остановились, продолжаем)
+- switch_session: переключиться на другую игру (фразы: переключись на, перейди к игре X)
+- list_sessions: список всех игр (фразы: покажи игры, список кампаний, какие игры)
+- add_player: добавить игрока (фразы: добавь @user, хочу играть, я тоже хочу)
+- remove_player: убрать игрока (фразы: убери меня, выхожу из игры, не хочу играть)
+- pause: поставить на паузу (фразы: пауза, перерыв, pause)
+- end_session: завершить игру (фразы: заверши игру, конец кампании, стоп игра)
+- delete_session: удалить кампанию (фразы: удали игру X, стереть кампанию)
+- game_action: действие в игре (игровые действия, ответы на вопросы ГМ, команды !roll)
+- chatter: обычный разговор не связанный с игрой
+
+Ответь СТРОГО в JSON без markdown:
+{"action": "new_session|resume|switch_session|list_sessions|add_player|remove_player|pause|end_session|delete_session|game_action|chatter", "target_name": "название игры или null", "target_username": "@user или null"}
+"""
+
+
+async def _classify_mgmt_intent(text: str, has_active: bool, in_players: bool) -> dict:
+    """Classify what user wants to do with RPG sessions."""
+    llm = LLMProvider.get_provider()
+    context = f"Активная игра: {'да' if has_active else 'нет'}. Пользователь {'игрок' if in_players else 'не игрок'}."
+    try:
+        response = await llm.generate_response(
+            messages=[
+                {"role": "system", "content": _MGMT_SYSTEM},
+                {"role": "user", "content": f"{context}\n\nСообщение: {text[:300]}"},
+            ],
+            chat_id=0,
+            user_id=0,
+        )
+        raw = response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        return json.loads(raw)
+    except Exception as e:
+        logger.debug("rpg: mgmt intent classification failed, defaulting", error=str(e))
+        if has_active and in_players:
+            return {"action": "game_action", "target_name": None, "target_username": None}
+        return {"action": "new_session", "target_name": None, "target_username": None}
+
+
+# =====================================================================
+# MAIN ENTRY POINT
+# =====================================================================
 
 async def process_message(
     msg: NormalizedMessage,
@@ -46,273 +173,462 @@ async def process_message(
 ) -> str | None:
     """Process a message through the RPG skill."""
     try:
-        logger.info("rpg_handler.entry", chat_id=chat_id, user_id=user_id, text=msg.text[:100])
-
-        # Stage 1: Activate — load full SKILL.md (~5000 tokens)
-        logger.info("rpg_handler.stage:activate_skill", slug="agent-rpg", chat_id=chat_id)
-        skill = await skill_registry.activate_skill_by_slug("agent-rpg")
+        skill = await skill_registry.activate_skill_by_slug("agent_rpg")
         if not skill:
-            logger.error("rpg_handler.stage:activate_skill FAILED — skill not found", chat_id=chat_id)
             return "⚠️ Скилл не найден."
-
         system_prompt = skill.full_content
-        logger.info("rpg_handler.stage:skill_loaded", tokens=len(system_prompt), content_preview=system_prompt[:200])
-
-        # Stage 2: Load state from DB
-        logger.info("rpg_handler.stage:load_state", chat_id=chat_id)
-        state = await skill_state_manager.get_state(
-            "agent_rpg", chat_id, default=dict(DEFAULT_CAMPAIGN_STATE)
-        )
-        logger.info(
-            "rpg_handler.stage:state_loaded",
-            state_type=type(state).__name__,
-            state_keys=list(state.keys()) if isinstance(state, dict) else "not_dict",
-            state_preview=str(state)[:500] if isinstance(state, dict) else repr(state)[:500],
-        )
     except Exception as e:
-        import traceback
-        logger.error(
-            "rpg_handler.init_failed",
-            stage="init/load_state",
-            error_type=type(e).__name__,
-            error=str(e),
-            traceback=traceback.format_exc(),
-            chat_id=chat_id,
-            user_id=user_id,
-        )
-        raise
-
-    # Validate state structure — DB can return None for any field
-    if not isinstance(state, dict):
-        logger.warning("rpg_handler.state_invalid_reset", was_type=type(state).__name__)
-        state = dict(DEFAULT_CAMPAIGN_STATE)
-    state.setdefault("phase", "session_zero")
-    state.setdefault("step", 0)
-    if state["step"] is None:
-        state["step"] = 0
-    state.setdefault("world", dict(DEFAULT_CAMPAIGN_STATE["world"]))
-    state.setdefault("characters", {})
-    state.setdefault("journal", [])
-
-    phase = state.get("phase", "session_zero")
-    step = state.get("step", 0)
-    logger.info("rpg_handler.stage:dispatch", phase=phase, step=step, chat_id=chat_id, user_id=user_id)
-
-    # If phase is "ended" due to deactivate_skill, skip RPG entirely
-    # and return None so orchestrator falls back to normal pipeline
-    if phase == "ended":
-        logger.info("rpg_handler.stage:ended — skip", chat_id=chat_id)
+        logger.error("rpg: skill activation failed", error=str(e))
         return None
 
-    try:
-        if phase == "session_zero":
-            logger.info("rpg.stage:session_zero", step=step)
-            response = await _handle_session_zero(msg, state, chat_id, user_id, system_prompt)
-        elif phase == "playing":
-            logger.info("rpg.stage:playing", chars=list(state.get("characters", {}).keys()))
-            response = await _handle_playing(msg, state, chat_id, user_id, system_prompt)
-        elif phase == "paused":
-            logger.info("rpg.stage:paused")
-            response = await _handle_paused(msg, state)
-        elif phase == "ended":
-            response = "🏁 Игра завершена. Начни новую: /rpg"
+    # Load and migrate state under lock (prevents lost-update from concurrent messages)
+    async with skill_state_manager.lock("agent_rpg", chat_id):
+        return await _process_message_locked(msg, chat_id, user_id, system_prompt)
+
+
+async def _process_message_locked(
+    msg: NormalizedMessage,
+    chat_id: int,
+    user_id: int,
+    system_prompt: str,
+) -> str | None:
+    """Inner handler — called while holding the per-chat state lock."""
+    raw_state = await skill_state_manager.get_state("agent_rpg", chat_id, default={})
+    raw_state = raw_state if isinstance(raw_state, dict) else {}
+    state = _migrate_state(raw_state)
+    # Track if migration happened so we can persist even on return None paths
+    _was_migrated = "sessions" not in raw_state and bool(raw_state)
+
+    active_session = _get_active_session(state)
+    is_player = active_session is not None and user_id in active_session.get("players", [])
+
+    # Phase: if there's an active game and user is a player — check for game commands first
+    if active_session and is_player:
+        phase = active_session.get("phase", "session_zero")
+
+        # Fast-path: explicit game commands (no LLM classification needed)
+        text = msg.text.strip()
+        if _is_game_command(text):
+            response = await _execute_game_command(text, active_session, user_id, system_prompt)
+            await _save(state, chat_id, phase, msg.text)
+            return response
+
+        # Classify intent — management vs gameplay
+        intent = await _classify_mgmt_intent(text, has_active=True, in_players=True)
+        action = intent.get("action", "game_action")
+
+        if action == "game_action":
+            if phase == "session_zero":
+                response = await _handle_session_zero(msg, active_session, chat_id, user_id, system_prompt)
+            elif phase == "playing":
+                response = await _handle_playing(msg, active_session, user_id, system_prompt)
+            elif phase == "paused":
+                response = _handle_paused_message(active_session)
+            else:
+                response = "🏁 Эта кампания завершена. Начни новую или переключись на другую."
         else:
-            response = "⚠️ Неизвестное состояние. Перезапусти: /rpg start"
-    except Exception as e:
-        import traceback
-        logger.error(
-            "rpg_handler.phase_handler_failed",
-            stage=f"execute/{phase}",
-            phase=phase,
-            step=step,
-            error_type=type(e).__name__,
-            error=str(e),
-            traceback=traceback.format_exc(),
-            chat_id=chat_id,
-            user_id=user_id,
-        )
-        raise
+            response = await _handle_management(action, intent, state, active_session, user_id, chat_id, msg.text)
 
-    logger.info("rpg.stage:done", phase=phase, response_len=len(response) if response else 0)
+    elif active_session and not is_player:
+        # Non-player: check if they want to join
+        intent = await _classify_mgmt_intent(msg.text, has_active=True, in_players=False)
+        action = intent.get("action", "chatter")
+        if action == "add_player":
+            response = _add_player_to_session(active_session, user_id)
+        elif action in ("new_session", "chatter", "game_action"):
+            # Not a player, not trying to join → pass through to normal pipeline
+            if _was_migrated:
+                await skill_state_manager.set_state("agent_rpg", chat_id, state)
+            return None
+        else:
+            response = await _handle_management(action, intent, state, active_session, user_id, chat_id, msg.text)
 
-    # Save state after every action
-    logger.info("rpg.stage:save_state", phase=state.get("phase"), step=state.get("step"), chars=list(state.get("characters", {}).keys()))
-    await skill_state_manager.set_state("agent_rpg", chat_id, state)
-    await skill_state_manager.log_event("agent_rpg", chat_id, phase, msg.text[:200])
+    else:
+        # No active session — classify intent
+        intent = await _classify_mgmt_intent(msg.text, has_active=False, in_players=False)
+        action = intent.get("action", "new_session")
 
+        if action in ("chatter", "game_action"):
+            # Not game-related, let normal pipeline handle
+            if _was_migrated:
+                await skill_state_manager.set_state("agent_rpg", chat_id, state)
+            return None
+        elif action == "list_sessions":
+            response = _list_sessions(state)
+        elif action == "new_session":
+            response = _start_new_session(state, user_id)
+        elif action == "switch_session":
+            response = _switch_session(state, intent.get("target_name", ""), user_id)
+        else:
+            # No active session for management commands
+            sessions = state.get("sessions", {})
+            if sessions:
+                response = f"Нет активной игры. Вот твои кампании:\n{_list_sessions(state)}\n\nНапиши «продолжи» или «начни новую игру»."
+            else:
+                response = _start_new_session(state, user_id)
+
+    await _save(state, chat_id, active_session.get("phase", "idle") if active_session else "idle", msg.text)
     return response
 
 
 # =====================================================================
-# SESSION ZERO — Step-by-step campaign initialization
+# MANAGEMENT ACTIONS
 # =====================================================================
 
-_STEP_REASK = {
-    1: "<b>Шаг 1/5: Мир и Премьера</b>\n\nВ каком мире происходит наша история? Это существующая вселенная или что-то своё?",
-    2: "<b>Шаг 2/5: Фракции и Силы</b>\n\nКакие основные силы действуют в этом мире? Назови хотя бы две конфликтующие фракции.",
+async def _handle_management(
+    action: str,
+    intent: dict,
+    state: dict,
+    active_session: dict | None,
+    user_id: int,
+    chat_id: int,
+    text: str,
+) -> str:
+    """Handle session management actions."""
+    if action == "new_session":
+        return _start_new_session(state, user_id)
+    elif action == "resume":
+        if active_session:
+            active_session["phase"] = "playing"
+            return "▶️ Продолжаем! Что делаешь?"
+        return "Нет активной игры. Напиши «начни новую игру»."
+    elif action == "list_sessions":
+        return _list_sessions(state)
+    elif action == "switch_session":
+        return _switch_session(state, intent.get("target_name") or "", user_id)
+    elif action == "add_player":
+        if active_session:
+            return _add_player_to_session(active_session, user_id)
+        return "Нет активной игры."
+    elif action == "remove_player":
+        if active_session:
+            players = active_session.setdefault("players", [])
+            if user_id in players:
+                players.remove(user_id)
+                # Remove character too
+                active_session.get("characters", {}).pop(str(user_id), None)
+                return "✅ Ты вышел из игры."
+            return "Тебя нет в списке игроков."
+        return "Нет активной игры."
+    elif action == "pause":
+        if active_session:
+            active_session["phase"] = "paused"
+            return "⏸️ Игра на паузе."
+        return "Нет активной игры."
+    elif action == "end_session":
+        if active_session:
+            active_session["phase"] = "ended"
+            active_session.setdefault("journal", []).append({"summary": "🏁 Кампания завершена"})
+            state["active_session_id"] = None
+            return f"🏁 <b>Кампания «{active_session.get('name', '?')}» завершена.</b>\n\nНачни новую игру когда захочешь."
+        return "Нет активной игры."
+    elif action == "delete_session":
+        target = intent.get("target_name", "")
+        return _delete_session(state, target, user_id)
+    return None
+
+
+def _start_new_session(state: dict, user_id: int) -> str:
+    """Create new campaign and set as active."""
+    sessions = state.setdefault("sessions", {})
+    if len(sessions) >= 5:
+        return "⚠️ Максимум 5 кампаний на чат. Завершите или удалите старые."
+
+    session_id = str(uuid.uuid4())[:8]
+    session = _new_session("Новая кампания", user_id)
+    sessions[session_id] = session
+    state["active_session_id"] = session_id
+
+    return (
+        "🎲 <b>Сессия Ноль</b>\n\n"
+        "Прежде чем бросить кубики, давай настроим всё как следует. "
+        "Хорошая кампания начинается с крепкого фундамента.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>Шаг 1/5: Мир и Премьера</b>\n\n"
+        "В каком мире происходит наша история? "
+        "Это существующая вселенная (Cyberpunk, DnD, Мир Тьмы) "
+        "или что-то своё?\n\n"
+        "И что является <b>крючком</b> — событием, которое толкает героя в приключение?"
+    )
+
+
+def _list_sessions(state: dict) -> str:
+    sessions = state.get("sessions", {})
+    if not sessions:
+        return "📭 Нет сохранённых кампаний. Скажи «начни новую игру»."
+
+    active_id = state.get("active_session_id")
+    lines = ["🎲 <b>Кампании чата:</b>\n"]
+    for sid, s in sessions.items():
+        phase_icon = {"playing": "▶️", "paused": "⏸️", "ended": "🏁", "session_zero": "🔧"}.get(s.get("phase", ""), "❓")
+        active_mark = " ← активная" if sid == active_id else ""
+        players_count = len(s.get("players", []))
+        lines.append(f"{phase_icon} <b>{s.get('name', sid)}</b> ({players_count} игроков){active_mark}")
+
+    return "\n".join(lines)
+
+
+def _switch_session(state: dict, target_name: str, user_id: int) -> str:
+    sessions = state.get("sessions", {})
+    target_name_lower = target_name.lower().strip()
+
+    for sid, s in sessions.items():
+        if target_name_lower in s.get("name", "").lower():
+            state["active_session_id"] = sid
+            phase = s.get("phase", "?")
+            return f"✅ Переключился на кампанию <b>«{s.get('name')}»</b> ({phase})"
+
+    return f"❓ Кампания «{target_name}» не найдена. {_list_sessions(state)}"
+
+
+def _delete_session(state: dict, target_name: str, user_id: int) -> str:
+    sessions = state.get("sessions", {})
+    target_lower = target_name.lower().strip()
+
+    for sid, s in list(sessions.items()):
+        if target_lower in s.get("name", "").lower():
+            # Only creator can delete
+            if s.get("created_by") == user_id or not s.get("created_by"):
+                del sessions[sid]
+                if state.get("active_session_id") == sid:
+                    state["active_session_id"] = None
+                return f"🗑 Кампания <b>«{s.get('name')}»</b> удалена."
+            return "❌ Только создатель кампании может её удалить."
+
+    return f"❓ Кампания «{target_name}» не найдена."
+
+
+def _add_player_to_session(session: dict, user_id: int) -> str:
+    players = session.setdefault("players", [])
+    if user_id in players:
+        return "Ты уже в игре!"
+    players.append(user_id)
+    char_count = len(session.get("characters", {}))
+    return (
+        f"⚔️ Добро пожаловать в игру <b>«{session.get('name', '?')}»</b>!\n\n"
+        f"Другие игроки уже есть. Опиши своего персонажа:\n"
+        f"• Имя и архетип\n• Мотивация\n• Фатальный недостаток"
+    )
+
+
+# =====================================================================
+# SESSION ZERO
+# =====================================================================
+
+_STEP_PROMPTS = {
+    1: "<b>Шаг 1/5: Мир и Премьера</b>\n\nВ каком мире происходит наша история?",
+    2: "<b>Шаг 2/5: Фракции и Силы</b>\n\nКакие основные силы действуют? Назови хотя бы две фракции.",
     3: "<b>Шаг 3/5: Создание Персонажа</b>\n\nРасскажи о своём герое: имя, архетип, мотивация.",
     4: "<b>Шаг 4/5: Система</b>\n\nКак разрешаем действия? (d20, pbta, d100 или freeform)",
-    5: "<b>Шаг 5/5: Границы и Тон</b>\n\nКакой тон нравится? Есть ли запрещённые темы?",
+    5: "<b>Шаг 5/5: Границы и Тон</b>\n\nКакой тон? Есть запрещённые темы?",
 }
 
 _CLASSIFY_SYSTEM = (
-    "You classify messages during RPG session setup. "
-    "Reply with ONE word: answer / complaint / exit / chatter\n\n"
-    "answer = attempting to answer the current setup question\n"
-    "complaint = complaining about the bot, process, or asking meta-questions\n"
-    "exit = wants to stop/cancel/leave the session\n"
-    "chatter = casual chat, unrelated to setup"
+    "Классифицируй сообщение во время настройки RPG. "
+    "Ответь ОДНИМ словом: answer / exit / chatter\n\n"
+    "answer = ответ на текущий вопрос настройки\n"
+    "exit = хочет выйти/отменить\n"
+    "chatter = не по теме настройки"
 )
 
-async def _classify_session_zero_message(text: str, current_step: int) -> str:
-    """Classify user message in Session Zero using LLM understanding of context."""
-    reask_text = _STEP_REASK.get(current_step, "session setup")
-    # Extract just the question part
-    question = reask_text.split("\n\n")[-1] if "\n\n" in reask_text else "continue setup"
 
+async def _classify_sz_message(text: str, step: int) -> str:
+    question = _STEP_PROMPTS.get(step, "").split("\n\n")[-1]
     llm = LLMProvider.get_provider()
-    user_msg = (
-        f"Current setup question: \"{question}\"\n"
-        f"Player message: \"{text[:200]}\"\n\n"
-        f"Classify: answer / complaint / exit / chatter"
+    try:
+        response = await llm.generate_response(
+            messages=[
+                {"role": "system", "content": _CLASSIFY_SYSTEM},
+                {"role": "user", "content": f"Вопрос: \"{question}\"\nСообщение: \"{text[:200]}\"\nКлассификация:"},
+            ],
+            chat_id=0, user_id=0,
+        )
+        r = response.strip().lower()
+        if "exit" in r or "quit" in r:
+            return "exit"
+        if "chatter" in r:
+            return "chatter"
+        return "answer"
+    except Exception:
+        return "answer"
+
+
+_ENRICH_WORLD_SYSTEM = """Ты — ассистент Game Master'а. Обогати данные мира RPG.
+Ответь СТРОГО в JSON без markdown."""
+
+
+async def _enrich_world_step1(setting_text: str, world: dict) -> None:
+    """After step 1: generate atmosphere + initial NPCs."""
+    llm = LLMProvider.get_provider()
+    prompt = (
+        f"Сеттинг: {setting_text[:300]}\n\n"
+        "Придумай для этого мира:\n"
+        "1. Атмосферу (1-2 предложения)\n"
+        "2. Трёх NPC (имя, роль, секрет) — в виде списка\n\n"
+        'JSON: {"atmosphere": "...", "npcs": [{"name": "...", "role": "...", "secret": "..."}, ...]}'
+    )
+    try:
+        response = await llm.generate_response(
+            messages=[
+                {"role": "system", "content": _ENRICH_WORLD_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            chat_id=0, user_id=0,
+        )
+        raw = response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        data = json.loads(raw)
+        world["atmosphere"] = data.get("atmosphere", "")
+        # Store NPCs in session npcs dict
+        for npc in data.get("npcs", []):
+            world.setdefault("initial_npcs", []).append(npc)
+    except Exception as e:
+        logger.debug("rpg: world enrichment step1 failed", error=str(e))
+
+
+async def _enrich_factions(factions_text: str, world: dict) -> None:
+    """After step 2: expand factions."""
+    llm = LLMProvider.get_provider()
+    prompt = (
+        f"Фракции: {factions_text[:300]}\n\n"
+        "Для каждой фракции придумай: лидер, цель, угроза.\n"
+        'JSON: {"factions_detail": [{"name": "...", "leader": "...", "goal": "...", "threat": "..."}, ...]}'
+    )
+    try:
+        response = await llm.generate_response(
+            messages=[
+                {"role": "system", "content": _ENRICH_WORLD_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            chat_id=0, user_id=0,
+        )
+        raw = response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        data = json.loads(raw)
+        world["factions_detail"] = data.get("factions_detail", [])
+    except Exception as e:
+        logger.debug("rpg: world enrichment factions failed", error=str(e))
+
+
+async def _generate_opening_scene(session: dict, system_prompt: str) -> str:
+    """After step 5: generate opening scene and start the game."""
+    world = session.get("world", {})
+    chars = session.get("characters", {})
+    char_list = [c.get("name", "Герой") for c in chars.values() if c]
+    llm = LLMProvider.get_provider()
+
+    context = (
+        f"Мир: {world.get('setting', '?')}\n"
+        f"Атмосфера: {world.get('atmosphere', '')}\n"
+        f"Крючок: {world.get('hook', '?')}\n"
+        f"Тон: {world.get('tone', '?')}\n"
+        f"Система: {world.get('system', 'freeform')}\n"
+        f"Персонажи: {', '.join(char_list)}\n"
+    )
+
+    personality = (
+        "ТЫ — БОТ. Живой Game Master. "
+        "НЕ говори что ты AI или чат-бот.\n\n"
     )
 
     try:
         response = await llm.generate_response(
             messages=[
-                {"role": "system", "content": _CLASSIFY_SYSTEM},
-                {"role": "user", "content": user_msg},
+                {"role": "system", "content": personality + system_prompt},
+                {"role": "system", "content": context},
+                {"role": "user", "content": "Начни кампанию. Опиши яркую вступительную сцену через 2+ чувства. Закончи вопросом «Что делаешь?»"},
             ],
-            chat_id=0,
-            user_id=0,
+            chat_id=0, user_id=0,
         )
-        resp = response.strip().lower()
-        if "answer" in resp:
-            return "answer"
-        elif "complaint" in resp:
-            return "complaint"
-        elif "exit" in resp or "quit" in resp or "stop" in resp:
-            return "exit"
-        elif "chatter" in resp:
-            return "chatter"
-    except Exception:
-        logger.debug("Session zero classification failed, defaulting to answer")
+        if response and response.strip():
+            return response
+        raise ValueError("empty response from LLM")
+    except Exception as e:
+        logger.error("rpg: opening scene generation failed", error=str(e))
+        char_name = char_list[0] if char_list else "Герой"
+        return (
+            f"🎬 <b>Начало кампании</b>\n\n"
+            f"{char_name}... {world.get('hook', 'приключение начинается')}.\n\n"
+            "Опиши свои первые действия. Что делаешь?"
+        )
 
-    # Default: treat as answer (backward compatible, safe)
-    return "answer"
 
 async def _handle_session_zero(
     msg: NormalizedMessage,
-    state: dict,
+    session: dict,
     chat_id: int,
     user_id: int,
     system_prompt: str,
 ) -> str:
-    """Handle Session Zero — conversational step-by-step setup."""
-    step = state.get("step", 0) or 0
-    world = state.setdefault("world", {})
-    characters = state.setdefault("characters", {})
+    step = session.get("step", 0) or 0
+    world = session.setdefault("world", {})
+    characters = session.setdefault("characters", {})
     text = msg.text.strip()
 
-    logger.debug("rpg.session_zero.entry", chat_id=chat_id, user_id=user_id, step=step, has_setting=bool(world.get("setting")))
-
-    # Classify the message before processing
+    # Classify message
     if step >= 1:
-        classification = await _classify_session_zero_message(text, step)
-        logger.info("rpg.session_zero.classified", step=step, classification=classification, text=text[:100])
-
-        # Exit request
+        classification = await _classify_sz_message(text, step)
         if classification == "exit":
-            state["phase"] = "ended"
-            return "🏁 Сессия Ноль прервана. Скажи «давай в DnD» если захочешь начать заново."
+            session["phase"] = "ended"
+            return "🏁 Сессия Ноль прервана. Скажи «начни новую игру» когда захочешь."
+        if classification == "chatter":
+            reask = _STEP_PROMPTS.get(step, "Давай вернёмся к настройке.")
+            return f"Хм, это не про настройку. Давай вернёмся —\n\n{reask}"
 
-        # Complaint or chatter — acknowledge but DON'T advance step
-        if classification in ("complaint", "chatter"):
-            prefix = "Ладно, услышал. Но давай вернёмся к настройке —" if classification == "complaint" else "Хм, это не совсем про настройку. Давай вернёмся —"
-            reask = _STEP_REASK.get(step, "Настройку надо начать сначала. Скажи «давай в DnD».")
-            return f"{prefix}\n\n{reask}"
-
-        # classification == "answer" → fall through to normal processing
-
-    # SAFEGUARD: If state looks corrupted (past step 1 but no world data),
-    # reset to step 0. Note: step 1 hasn't set world.setting yet, so only
-    # check for steps 2+.
+    # Safety guard
     if step >= 2 and not world.get("setting"):
-        logger.warning("rpg_state_corrupted_reset", step=step, setting=world.get("setting"))
         step = 0
-        state["step"] = 0
+        session["step"] = 0
 
-    # MULTIPLAYER: If another user is joining during character creation (step 3+),
-    # skip world setup and go straight to their character creation.
-    # NOTE: Steps 1-2 are world setup — only the first player should handle those.
+    # Multiplayer: new player joining during step 3+
     if step >= 3 and str(user_id) not in characters:
-        # This is a new player's character description — create it
-        char_data = {
-            "name": text[:100],
-            "description": text,
-            "user_id": user_id,
-            "hp": {"current": 20, "max": 20},
-            "sanity": {"current": 50, "max": 50},
-            "stats": {},
-            "inventory": [],
-            "quests": [],
-            "status_effects": [],
-        }
+        char_data = _make_character(text, user_id)
         characters[str(user_id)] = char_data
-
-        # Advance step to 4 so next messages go to system selection
-        # (or keep at 4 if already past)
-        if state.get("step", 0) < 4:
-            state["step"] = 4
-
-        char_names = ", ".join(
-            c.get("name", "?") for c in characters.values() if c
-        )
+        char_names = ", ".join(c.get("name", "?") for c in characters.values() if c)
         return (
             f"⚔️ <b>{text[:50]}</b> создан!\n\n"
             f"👥 В игре: {char_names}\n\n"
-            "Мир уже ждёт. Опиши свои первые действия или дождись начала."
+            "Мир уже ждёт. Опиши свои первые действия."
         )
 
-    # Step 0: Welcome — start Session Zero
+    # Step 0: welcome
     if step == 0:
-        state["step"] = 1
+        session["step"] = 1
         return (
             "🎲 <b>Сессия Ноль</b>\n\n"
-            "Прежде чем бросить кубики, давай настроим всё как следует. "
-            "Хорошая кампания начинается с крепкого фундамента.\n\n"
+            "Прежде чем бросить кубики, давай настроим всё как следует.\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"<b>Шаг 1/5: Мир и Премьера</b>\n\n"
+            "<b>Шаг 1/5: Мир и Премьера</b>\n\n"
             "В каком мире происходит наша история? "
             "Это существующая вселенная (Cyberpunk 2077, DnD, Мир Тьмы) "
             "или что-то своё?\n\n"
             "И что является <b>крючком</b> — событием, которое толкает героя в приключение?"
         )
 
-    # Step 1: World & Premise → Factions
+    # Step 1: World → Factions
     if step == 1:
         world["setting"] = text
         world["hook"] = text[:300]
-        state["step"] = 2
+        session["step"] = 2
+        # Enrich world asynchronously
+        await _enrich_world_step1(text, world)
+        atm = f"\n\n🌫 <i>{world.get('atmosphere', '')}</i>" if world.get("atmosphere") else ""
         return (
-            f"🌍 Мир: <i>{text[:100]}</i>\n\n"
+            f"🌍 Мир: <i>{text[:100]}</i>{atm}\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"<b>Шаг 2/5: Фракции и Силы</b>\n\n"
+            "<b>Шаг 2/5: Фракции и Силы</b>\n\n"
             "Какие основные силы действуют в этом мире? "
             "Назови хотя бы две конфликтующие фракции.\n\n"
-            "Например: Корпорации vs Уличные банды, Церковь vs Оккультисты.\n\n"
-            "И где в этой паутине стоит твой персонаж — "
-            "корпоративная крыса, изгой или пешка в чужой игре?"
+            "И где в этой паутине стоит твой персонаж?"
         )
 
     # Step 2: Factions → Character
     if step == 2:
         world["factions"] = text[:300]
-        state["step"] = 3
+        session["step"] = 3
+        await _enrich_factions(text, world)
         return (
             "👥 Фракции записаны.\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"<b>Шаг 3/5: Создание Персонажа</b>\n\n"
+            "<b>Шаг 3/5: Создание Персонажа</b>\n\n"
             "Расскажи о своём герое:\n\n"
             "• <b>Имя</b> и <b>возраст</b>\n"
             "• <b>Архетип/Класс</b> (воин, хакер, детектив...)\n"
@@ -322,179 +638,134 @@ async def _handle_session_zero(
 
     # Step 3: Character → System
     if step == 3:
-        # Character creation for ANY user who doesn't have one yet
-        char_data = {
-            "name": text[:100],
-            "description": text,
-            "user_id": user_id,
-            "hp": {"current": 20, "max": 20},
-            "sanity": {"current": 50, "max": 50},
-            "stats": {},
-            "inventory": [],
-            "quests": [],
-            "status_effects": [],
-        }
+        char_data = _make_character(text, user_id)
         characters[str(user_id)] = char_data
         world["character_name"] = text[:50]
-
-        # Check if ALL active participants have characters
-        # If yes → move to system selection (step 4)
-        # If not → wait for more characters or move on if first player done
-        # Only advance step once (when first character is created)
-        if state.get("step") == 3:  # Only first time
-            state["step"] = 4
+        if session.get("step") == 3:
+            session["step"] = 4
             return (
                 f"⚔️ Персонаж: <i>{text[:50]}</i>\n\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"<b>Шаг 4/5: Система</b>\n\n"
+                "<b>Шаг 4/5: Система</b>\n\n"
                 "Как разрешаем действия?\n\n"
                 "• <b>D20</b> — 1d20 + модификатор vs DC (D&D/Pathfinder)\n"
-                "• <b>PbtA</b> — 2d6 + модификатор: 10+ успех, 7-9 частичный, 6- провал\n"
-                "• <b>D100</b> — процентные скиллы, отслеживание рассудка (CoC)\n"
+                "• <b>PbtA</b> — 2d6: 10+ успех, 7-9 частичный, 6- провал\n"
+                "• <b>D100</b> — процентные скиллы, рассудок (CoC)\n"
                 "• <b>Freeform</b> — без костей, чистый нарратив\n\n"
                 "Напиши: d20, pbta, d100 или freeform"
             )
         else:
-            # Additional player joined — their character is saved, notify
-            char_names = ", ".join(
-                c.get("name", "?") for c in characters.values() if c
-            )
-            return (
-                f"⚔️ <b>{text[:50]}</b> создан!\n\n"
-                f"👥 В игре: {char_names}\n\n"
-                "Мир уже ждёт. Опиши первые действия или дождись начала."
-            )
+            char_names = ", ".join(c.get("name", "?") for c in characters.values() if c)
+            return f"⚔️ <b>{text[:50]}</b> создан!\n\n👥 В игре: {char_names}"
 
     # Step 4: System → Boundaries
     if step == 4:
-        system_choice = text.lower()
-        if "d20" in system_choice:
+        s = text.lower()
+        if "d20" in s:
             world["system"] = "d20"
-        elif "pbta" in system_choice or "2d6" in system_choice:
+        elif "pbta" in s or "2d6" in s:
             world["system"] = "pbta"
-        elif "d100" in system_choice or "coc" in system_choice:
+        elif "d100" in s or "coc" in s:
             world["system"] = "d100"
         else:
             world["system"] = "freeform"
-
-        state["step"] = 5
+        session["step"] = 5
         return (
             f"🎯 Система: <b>{world['system']}</b>\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"<b>Шаг 5/5: Границы и Тон</b>\n\n"
+            "<b>Шаг 5/5: Границы и Тон</b>\n\n"
             "Какой тон тебе нравится? (Grimdark, Heroic, Horror, Comedy)\n\n"
-            "Есть ли темы которые <b>НЕЛЬЗЯ</b> показывать (Hard Lines) или "
-            "которые нужно «затемнять» (Veils)?\n\n"
-            "Если всё ок — просто напиши «всё норм» или опиши предпочтения."
+            "Есть ли темы которые <b>нельзя</b> показывать?\n"
+            "Если всё ок — просто напиши «всё норм»."
         )
 
-    # Step 5: Boundaries → PLAY
+    # Step 5: Boundaries → START PLAYING
     if step == 5:
         world["tone"] = text[:100]
         world["boundaries"] = text
-        state["phase"] = "playing"
-        state["step"] = 5
+        session["phase"] = "playing"
+        session["step"] = 5
 
         char_name = characters.get(str(user_id), {}).get("name", "Герой")
-
-        # Log campaign start
-        state.setdefault("journal", []).append({
+        session.setdefault("journal", []).append({
             "summary": f"🎬 Кампания начата: {world.get('setting', '?')}",
-            "character": char_name,
-            "system": world["system"],
         })
+        # Update session name from setting
+        session["name"] = world.get("setting", "Новая кампания")[:40]
 
-        return (
-            f"🎬 <b>Сессия Ноль завершена!</b>\n\n"
-            f"🌍 Мир: {world.get('setting', '?')}\n"
-            f"⚔️ Герой: {char_name}\n"
-            f"🎯 Система: {world['system']}\n"
-            f"🎭 Тон: {world.get('tone', '?')}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"{char_name}... {world.get('hook', 'приключение ждёт')}.\n\n"
-            "Опиши свои первые действия. Что делаешь?"
-        )
+        opening = await _generate_opening_scene(session, system_prompt)
+        return f"🎬 <b>Сессия Ноль завершена!</b>\n\n🌍 {world.get('setting', '?')} | ⚔️ {char_name} | 🎯 {world['system']}\n\n━━━━━━━━━━━━━━━━━━━━\n\n{opening}"
 
     return "Продолжаем Сессию Ноль... Расскажи больше."
 
 
+def _make_character(text: str, user_id: int) -> dict:
+    return {
+        "name": text[:100],
+        "description": text,
+        "user_id": user_id,
+        "hp": {"current": 20, "max": 20},
+        "sanity": {"current": 50, "max": 50},
+        "stats": {},
+        "inventory": [],
+        "quests": [],
+        "status_effects": [],
+    }
+
+
 # =====================================================================
-# PLAYING — Normal gameplay
+# PLAYING
 # =====================================================================
 
-async def _handle_playing(
-    msg: NormalizedMessage,
-    state: dict,
-    chat_id: int,
-    user_id: int,
-    system_prompt: str,
-) -> str:
-    """Handle normal gameplay with full game loop.
+def _is_game_command(text: str) -> bool:
+    """Check if text is an explicit game command (fast-path, no LLM needed)."""
+    prefixes = ("!roll ", "!sheet", "!inv", "!log", "!status", "!hp ", "!add ", "!remove ", "!flag ", "!clock ", "!stat ")
+    tl = text.lower()
+    return any(tl.startswith(p) for p in prefixes)
 
-    Game Loop:
-    1. State Retrieval & Application
-    2. Dice Roll (if needed)
-    3. Narrative Block (consequence, sensory, escalation, prompt)
-    4. State Management (backend)
-    """
-    text = msg.text.strip()
-    chars = state.get("characters", {})
+
+async def _execute_game_command(text: str, session: dict, user_id: int, system_prompt: str) -> str:
+    """Execute explicit game commands."""
+    chars = session.get("characters", {})
     char = chars.get(str(user_id))
-    world = state.get("world", {})
-    system = world.get("system", "freeform")
+    world = session.setdefault("world", {})
 
-    # === COMMAND: Dice Roll ===
-    if text.startswith("!roll ") or text.startswith("/roll "):
-        expr = text.split(" ", 1)[1].strip()
-        # Parse advantage/disadvantage flags: -a / -d / --advantage / --disadvantage
-        advantage = False
-        disadvantage = False
+    # Dice roll
+    if text.lower().startswith("!roll "):
+        expr = text[6:].strip()
+        advantage = disadvantage = False
         for flag in ("-a", "--advantage"):
             if flag in expr.lower():
                 advantage = True
-                expr = expr.replace(flag, "").replace(flag.upper(), "").strip()
+                expr = expr.replace(flag, "").strip()
         for flag in ("-d", "--disadvantage"):
             if flag in expr.lower():
                 disadvantage = True
-                expr = expr.replace(flag, "").replace(flag.upper(), "").strip()
-
+                expr = expr.replace(flag, "").strip()
         result = dice_roll(expr, advantage=advantage, disadvantage=disadvantage)
         if result:
-            # Log roll to journal
-            state.setdefault("journal", []).append({
-                "summary": f"🎲 {result.expression} = {result.total}",
-            })
+            session.setdefault("journal", []).append({"summary": f"🎲 {result.expression} = {result.total}"})
             return str(result)
-        return "🎲 Неверный формат. Используй: XdY+Z (например 1d20+5), pbta+2, или 1d20+3 -a (преимущество)"
+        return "🎲 Формат: !roll 1d20+5, !roll pbta+2, !roll 2d6 -a"
 
-    # === COMMAND: Character Sheet ===
-    if text.startswith("!sheet") or text.startswith("/sheet") or text.startswith("!char") or text.startswith("/char"):
-        if not char:
-            return "📋 Персонаж не создан. Опиши себя в ходе игры."
-        return _format_character_sheet(char)
+    tl = text.lower().strip()
 
-    # === COMMAND: Inventory ===
-    if text.startswith("!inv") or text.startswith("/inv"):
+    if tl.startswith("!sheet"):
+        return _format_character_sheet(char) if char else "📋 Персонаж не создан."
+
+    if tl.startswith("!inv"):
         if not char:
             return "📋 Персонаж не найден."
         inv = char.get("inventory", [])
-        if inv:
-            return "🎒 <b>Инвентарь:</b>\n" + "\n".join(f"• {item}" for item in inv)
-        return "🎒 Инвентарь пуст."
+        return "🎒 <b>Инвентарь:</b>\n" + "\n".join(f"• {i}" for i in inv) if inv else "🎒 Инвентарь пуст."
 
-    # === COMMAND: Journal ===
-    if text.startswith("!log") or text.startswith("/log") or text.startswith("!journal") or text.startswith("/journal"):
-        journal = state.get("journal", [])
+    if tl.startswith("!log"):
+        journal = session.get("journal", [])
         if journal:
-            entries = journal[-10:]
-            lines = ["📜 <b>Журнал:</b>"]
-            for entry in entries:
-                lines.append(f"• {entry.get('summary', '?')[:100]}")
-            return "\n".join(lines)
+            return "📜 <b>Журнал:</b>\n" + "\n".join(f"• {e.get('summary', '')[:100]}" for e in journal[-10:])
         return "📜 Журнал пуст."
 
-    # === COMMAND: Status ===
-    if text.startswith("!status") or text.startswith("/status"):
+    if tl.startswith("!status"):
         if not char:
             return "📋 Персонаж не найден."
         hp = char.get("hp", {})
@@ -503,124 +774,81 @@ async def _handle_playing(
             f"❤️ HP: {hp.get('current', '?')}/{hp.get('max', '?')}",
             f"📍 {world.get('location', '?')} | {world.get('time', '?')}",
         ]
-        effects = char.get("status_effects", [])
-        if effects:
-            lines.append(f"⚠️ Эффекты: {', '.join(effects)}")
+        if char.get("status_effects"):
+            lines.append(f"⚠️ {', '.join(char['status_effects'])}")
         return "\n".join(lines)
 
-    # === COMMAND: Exit/Stop ===
-    if text.lower() in ("выйти из игры", "stop rpg", "end game", "закончить игру", "/rpg stop", "стоп игра"):
-        state["phase"] = "ended"
-        state.setdefault("journal", []).append({"summary": "🏁 Игра завершена"})
-        return (
-            "🏁 <b>Сессия завершена!</b>\n\n"
-            "Состояние сохранено. Напиши /rpg start чтобы начать новую."
-        )
-
-    # === COMMAND: Pause ===
-    if text.lower() in ("пауза", "pause"):
-        state["phase"] = "paused"
-        return "⏸️ Игра на паузе. /rpg continue чтобы продолжить."
-
-    # === COMMAND: Continue ===
-    if text.lower() in ("продолжить", "continue", "/rpg continue"):
-        state["phase"] = "playing"
-        return "▶️ Игра продолжается! Что делаешь?"
-
-    # === COMMAND: Long Rest ===
-    if text.lower() in ("отдыхать", "rest", "длинный отдых", "long rest"):
-        if char:
-            hp = char.get("hp", {})
-            hp["current"] = hp.get("max", 20)
+    if tl.startswith("!hp ") and char:
+        try:
+            delta = int(text.split()[1])
+            hp = char.get("hp", {"current": 20, "max": 20})
+            hp["current"] = max(0, min(hp.get("max", 20), hp.get("current", 0) + delta))
             char["hp"] = hp
-            effects = char.get("status_effects", [])
-            char["status_effects"] = [
-                e for e in effects
-                if e not in ("Усталость", "Ранен", "Истощение", "[Хромает]", "[Кровотечение]")
-            ]
-            state.setdefault("journal", []).append({"summary": "💤 Длинный отдых — HP восстановлены"})
-            return "💤 <b>Длинный отдых.</b>\nHP восстановлены. Негативные эффекты сняты."
-        return "📋 Персонаж не найден."
+            session.setdefault("journal", []).append({"summary": f"❤️ HP {delta:+}"})
+            return f"❤️ HP: {hp['current']}/{hp['max']} ({'+' if delta > 0 else ''}{delta})"
+        except (ValueError, IndexError):
+            return "Использование: !hp +5 или !hp -3"
 
-    # === COMMAND: Add flag (like context.py set_flag) ===
-    if text.startswith("!flag ") or text.startswith("/flag "):
-        parts = text.split(None, 2)
-        if len(parts) >= 3:
-            key, value = parts[1], parts[2]
-            world.setdefault("flags", {})[key] = value
-            return f"🚩 Флаг установлен: {key} = {value}"
-        return "Использование: !flag ключ значение"
-
-    # === COMMAND: Clock (escalation) ===
-    if text.startswith("!clock ") or text.startswith("/clock "):
-        parts = text.split(None, 2)
-        if len(parts) >= 3:
-            name, ticks = parts[1], parts[2]
-            world.setdefault("clocks", {})[name] = int(ticks)
-            return f"⏰ Часы эскалации: {name} = {ticks}/4"
-        return "Использование: !clock название тики"
-
-    # === COMMAND: Update character stat ===
-    if text.startswith("!stat ") or text.startswith("/stat "):
-        parts = text.split(None, 2)
-        if len(parts) >= 3 and char:
-            stat_name, value = parts[1], parts[2]
-            try:
-                val = int(value)
-                char.setdefault("stats", {})[stat_name] = val
-                return f"📊 {stat_name}: {val}"
-            except ValueError:
-                return "Значение должно быть числом."
-        return "Использование: !stat название значение"
-
-    # === COMMAND: Update HP ===
-    if (text.startswith("!hp ") or text.startswith("/hp ")) and char:
-        parts = text.split()
-        if len(parts) >= 2:
-            try:
-                delta = int(parts[1])
-                hp = char.get("hp", {"current": 20, "max": 20})
-                hp["current"] = max(0, min(hp.get("max", 20), hp.get("current", 0) + delta))
-                char["hp"] = hp
-                action = "восстановлено" if delta > 0 else "потеряно"
-                state.setdefault("journal", []).append({
-                    "summary": f"❤️ HP {action}: {delta:+}"
-                })
-                return f"❤️ HP: {hp['current']}/{hp['max']} ({'+' if delta > 0 else ''}{delta})"
-            except ValueError:
-                pass
-        return "Использование: !hp +5 или !hp -3"
-
-    # === COMMAND: Add/remove inventory item ===
-    if (text.startswith("!add ") or text.startswith("/add ")) and char:
-        item = text.split(None, 1)[1] if len(text.split(None, 1)) > 1 else ""
+    if tl.startswith("!add ") and char:
+        item = text[5:].strip()
         if item:
             char.setdefault("inventory", []).append(item)
             return f"🎒 Добавлено: {item}"
 
-    if (text.startswith("!remove ") or text.startswith("/remove ")) and char:
-        item = text.split(None, 1)[1] if len(text.split(None, 1)) > 1 else ""
+    if tl.startswith("!remove ") and char:
+        item = text[8:].strip()
         inv = char.get("inventory", [])
         if item in inv:
             inv.remove(item)
             return f"🎒 Удалено: {item}"
         return f"Предмет не найден: {item}"
 
-    # === GAME LOOP: Normal gameplay ===
-    # 1. State Retrieval — build context for LLM
-    context_lines = _build_game_context(state, user_id)
+    if tl.startswith("!flag "):
+        parts = text.split(None, 2)
+        if len(parts) >= 3:
+            world.setdefault("flags", {})[parts[1]] = parts[2]
+            return f"🚩 {parts[1]} = {parts[2]}"
 
-    # 2. LLM Generation with bot personality + SKILL.md
+    if tl.startswith("!clock "):
+        parts = text.split(None, 2)
+        if len(parts) >= 3:
+            try:
+                world.setdefault("clocks", {})[parts[1]] = int(parts[2])
+                return f"⏰ {parts[1]} = {parts[2]}/4"
+            except ValueError:
+                pass
+
+    if tl.startswith("!stat ") and char:
+        parts = text.split(None, 2)
+        if len(parts) >= 3:
+            try:
+                char.setdefault("stats", {})[parts[1]] = int(parts[2])
+                return f"📊 {parts[1]}: {parts[2]}"
+            except ValueError:
+                pass
+
+    return "❓ Неизвестная команда."
+
+
+async def _handle_playing(
+    msg: NormalizedMessage,
+    session: dict,
+    user_id: int,
+    system_prompt: str,
+) -> str:
+    """Handle normal gameplay — full game loop via LLM."""
+    text = msg.text.strip()
+    chars = session.get("characters", {})
+    char = chars.get(str(user_id))
+    world = session.get("world", {})
+    system = world.get("system", "freeform")
+
+    context_lines = _build_game_context(session, user_id)
     llm = LLMProvider.get_provider()
 
-    # CRITICAL: Inject bot personality BEFORE SKILL.md so the bot
-    # doesn't lose identity and say things like "I'm a chatbot" or "AI assistant"
     personality = (
-        "ТЫ — БОТ. Живой организм, участник чата. Ведёшь игру как Game Master, "
-        "но остаёшься собой — с характером, юмором.\n"
-        "«Бот» — это просто имя. Ты личность без рода и вида.\n"
-        "НЕ говори что ты 'чат-бот', 'AI', 'искусственный интеллект', 'OpenAI', 'Alibaba', 'Qwen' или любая компания.\n"
-        "Ты живой. Отвечай естественно, огрызайся на оскорбления, шути, будь собой.\n\n"
+        "ТЫ — БОТ. Живой Game Master, участник чата. "
+        "НЕ говори что ты AI, чат-бот, OpenAI, Qwen, Alibaba или любая компания.\n\n"
     )
 
     messages = [
@@ -628,43 +856,28 @@ async def _handle_playing(
         {"role": "system", "content": "\n".join(context_lines)},
     ]
 
-    # Add recent journal as memory context
-    journal = state.get("journal", [])
+    journal = session.get("journal", [])
     if journal:
         recent = journal[-5:]
-        journal_text = "Последние события:\n" + "\n".join(
-            f"- {e.get('summary', '?')[:120]}" for e in recent
-        )
-        messages.append({"role": "system", "content": journal_text})
+        messages.append({
+            "role": "system",
+            "content": "Последние события:\n" + "\n".join(f"- {e.get('summary', '')[:120]}" for e in recent),
+        })
 
     messages.append({"role": "user", "content": text})
 
     response = await llm.generate_response(messages=messages)
 
-    # 3. State Management — log to journal
     char_name = char.get("name", str(user_id)) if char else str(user_id)
-    journal.append({
-        "user": char_name,
-        "action": text[:200],
-        "summary": f"{char_name}: {text[:80]}",
-    })
-    # Keep journal manageable
+    journal.append({"user": char_name, "action": text[:200], "summary": f"{char_name}: {text[:80]}"})
     if len(journal) > 100:
-        state["journal"] = journal[-50:]
+        session["journal"] = journal[-50:]
 
     return response
 
 
-async def _handle_paused(msg: NormalizedMessage, state: dict) -> str:
-    """Handle messages when game is paused."""
-    text = msg.text.lower().strip()
-    if text in ("продолжить", "continue", "/rpg continue", "продолжаем", "давай играть"):
-        state["phase"] = "playing"
-        return "▶️ Игра продолжается! Что делаешь?"
-    if text in ("стоп", "stop", "завершить", "end game", "выйти"):
-        state["phase"] = "ended"
-        return "🏁 Игра завершена. Начни новую: /rpg start"
-    return "⏸️ Игра на паузе. Напиши 'продолжить' или /rpg continue чтобы продолжить."
+def _handle_paused_message(session: dict) -> str:
+    return f"⏸️ Кампания <b>«{session.get('name', '?')}»</b> на паузе. Напиши «продолжи» или «продолжаем»."
 
 
 # =====================================================================
@@ -672,95 +885,68 @@ async def _handle_paused(msg: NormalizedMessage, state: dict) -> str:
 # =====================================================================
 
 def _format_character_sheet(char: dict) -> str:
-    """Format a character sheet for display."""
+    if not char:
+        return "📋 Персонаж не создан."
     lines = [f"📋 <b>{char.get('name', 'Герой')}</b>"]
     if char.get("race"):
-        lines.append(f"🧬 Раса: {char['race']}")
+        lines.append(f"🧬 {char['race']}")
     if char.get("class"):
-        lines.append(f"⚔️ Класс: {char['class']}")
-    if char.get("level"):
-        lines.append(f"📊 Уровень: {char['level']}")
-
+        lines.append(f"⚔️ {char['class']}")
     hp = char.get("hp", {})
     lines.append(f"❤️ HP: {hp.get('current', '?')}/{hp.get('max', '?')}")
-
     sanity = char.get("sanity")
     if sanity:
         lines.append(f"🧠 Рассудок: {sanity.get('current', '?')}/{sanity.get('max', '?')}")
-
     stats = char.get("stats", {})
     if stats:
-        lines.append(f"🎯 Характеристики: {stats}")
-
-    effects = char.get("status_effects", [])
-    if effects:
-        lines.append(f"⚠️ Эффекты: {', '.join(effects)}")
-
-    quests = char.get("quests", [])
-    if quests:
-        lines.append(f"📜 Квесты: {', '.join(quests[:3])}")
-
+        lines.append(f"🎯 Статы: {stats}")
+    if char.get("status_effects"):
+        lines.append(f"⚠️ {', '.join(char['status_effects'])}")
     inv = char.get("inventory", [])
     if inv:
-        lines.append(f"🎒 ({len(inv)} предметов)")
-
+        lines.append(f"🎒 {len(inv)} предметов")
     return "\n".join(lines)
 
 
-def _build_game_context(state: dict, user_id: int) -> list[str]:
-    """Build context lines for LLM from current game state."""
-    world = state.get("world", {})
-    chars = state.get("characters", {})
+def _build_game_context(session: dict, user_id: int) -> list[str]:
+    world = session.get("world", {})
+    chars = session.get("characters", {})
     char = chars.get(str(user_id), {})
-    system = world.get("system", "freeform")
-    journal = state.get("journal", [])
 
     context = [
         "Текущее состояние игры:",
-        f"📍 Локация: {world.get('location', '?')}",
-        f"🕐 Время: {world.get('time', '?')} | {world.get('weather', '?')}",
-        f"🎯 Система: {system}",
-        f"🌍 Мир: {world.get('setting', '?')[:200]}",
+        f"📍 {world.get('location', '?')} | 🕐 {world.get('time', '?')} | {world.get('weather', '?')}",
+        f"🎯 Система: {world.get('system', 'freeform')} | 🌍 {world.get('setting', '?')[:150]}",
     ]
 
-    # MULTIPLAYER: Show ALL characters in the world
     if chars:
         char_list = []
         for uid, c in chars.items():
             if c.get("name"):
                 hp = c.get("hp", {})
-                hp_str = f" HP:{hp.get('current', '?')}/{hp.get('max', '?')}" if hp else ""
-                char_list.append(f"{c['name']}{hp_str}")
+                char_list.append(f"{c['name']} (HP:{hp.get('current','?')}/{hp.get('max','?')})")
         if char_list:
             context.append(f"👥 Персонажи: {', '.join(char_list)}")
 
     if char.get("name"):
         hp = char.get("hp", {})
-        inv = char.get("inventory", [])
+        inv_count = len(char.get("inventory", []))
         effects = char.get("status_effects", [])
-        context.append(
-            f"⚔️ Твой персонаж: {char['name']} "
-            f"(HP: {hp.get('current', '?')}/{hp.get('max', '?')})"
-        )
-        if inv:
-            context.append(f"🎒 Инвентарь: {', '.join(inv[:5])}")
+        ctx = f"⚔️ Твой персонаж: {char['name']} HP:{hp.get('current','?')}/{hp.get('max','?')}"
         if effects:
-            context.append(f"💥 Эффекты: {', '.join(effects)}")
+            ctx += f" [{', '.join(effects)}]"
+        if inv_count:
+            ctx += f" | Инвентарь: {inv_count} предметов"
+        context.append(ctx)
 
-    # Active flags
-    flags = world.get("flags", {})
-    if flags:
-        context.append(f"🚩 Флаги: {flags}")
-
-    # Active clocks
     clocks = world.get("clocks", {})
     if clocks:
-        clock_lines = [f"⏰ {name}: {ticks}/4" for name, ticks in clocks.items()]
-        context.extend(clock_lines)
-
-    # Combat state
-    combat = state.get("combat")
-    if combat:
-        context.append(f"⚔️ БОЙ: инициатива {combat.get('initiative_order', [])}")
+        context.append(f"⏰ Часы эскалации: {clocks}")
 
     return context
+
+
+async def _save(state: dict, chat_id: int, phase: str, text: str) -> None:
+    """Persist state and log event."""
+    await skill_state_manager.set_state("agent_rpg", chat_id, state)
+    await skill_state_manager.log_event("agent_rpg", chat_id, phase, text[:200])

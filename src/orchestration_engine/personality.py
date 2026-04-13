@@ -231,7 +231,8 @@ class BotPersonality:
         elif weekday == 0:
             mood_hint += " Понедельник — сочувствуй если кто жалуется."
 
-        parts = [f"ВРЕМЯ: {day_name}, {hour:02d}:{now.minute:02d} ({period}). {mood_hint}"]
+        date_str = now.strftime("%d.%m.%Y")
+        parts = [f"ВРЕМЯ: {day_name}, {date_str}, {hour:02d}:{now.minute:02d} МСК ({period}). {mood_hint}"]
 
         # Holiday check
         holiday = self._HOLIDAYS.get((now.month, now.day))

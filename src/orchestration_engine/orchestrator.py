@@ -179,11 +179,6 @@ class Orchestrator:
             await fact_extractor.update_profile_from_facts(msg.user_id, msg.chat_id)
             await relationship_engine.update_profile_relationships(msg.user_id, msg.chat_id)
 
-        # ===== ФАЗА 1.5: ПРОВЕРЯЕМ НАПОМИНАНИЕ =====
-        reminder = await self._try_parse_reminder(msg)
-        if reminder:
-            return reminder
-
         # ===== ФАЗА 1.6: ДЕТЕКЦИЯ АГРЕССИИ =====
         abuse_result = await abuse_detector.analyze(msg)
         if abuse_result["is_abuse"]:
@@ -262,57 +257,6 @@ class Orchestrator:
 
         # Не должен отвечать
         return None
-
-    async def _try_parse_reminder(self, msg: NormalizedMessage) -> str | None:
-        """
-        Попытаться распознать напоминание из текста.
-        Если это напоминание — создать и вернуть подтверждение.
-        """
-        text_lower = msg.text.lower()
-
-        # Проверяем что это команда напоминания
-        if not any(w in text_lower for w in ["напомни", "напоминани"]):
-            return None
-
-        # Проверяем что обращение к боту
-        trigger = trigger_system.evaluate(
-            text=msg.text,
-            is_reply=msg.reply_to_message_id is not None,
-            reply_to_bot=False,
-            in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
-            chat_id=msg.chat_id,
-        )
-
-        if trigger.level != ConfidenceLevel.HIGH:
-            return None
-
-        # Парсим напоминание
-        parsed = reminder_manager.parse_natural_reminder(msg.text, msg.chat_id)
-        if not parsed:
-            return None
-
-        remind_at, content, target_user_id = parsed
-
-        # Создаём напоминание
-        reminder = await reminder_manager.create_reminder(
-            chat_id=msg.chat_id,
-            user_id=msg.user_id,
-            content=content,
-            remind_at=remind_at,
-            target_user_id=target_user_id,
-        )
-
-        time_str = remind_at.strftime("%d.%m.%Y в %H:%M")
-        target_text = ""
-        if target_user_id:
-            names = context_tracker.get_participant_names(msg.chat_id)
-            target_name = names.get(target_user_id)
-            if target_name:
-                target_text = f" для @{target_name}"
-            else:
-                target_text = f" для user_{target_user_id}"
-
-        return f"📝 Запомнил! Напомню{target_text} {time_str}: {content}"
 
     async def _llm_route(self, msg: NormalizedMessage) -> str | None:
         """

@@ -137,7 +137,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/debug/skill-state")
     async def debug_skill_state(chat_id: int) -> dict:
-        """Debug endpoint: show RPG skill state for a chat."""
+        """Debug endpoint: show RPG skill state for a chat (supports multi-session v2 format)."""
         from src.database.models import SkillState
         from src.database.session import get_session
         from sqlalchemy import select
@@ -151,14 +151,41 @@ def create_app() -> FastAPI:
             record = result.scalar_one_or_none()
 
             if record:
+                state = record.state_json or {}
+                # Multi-session v2 format
+                if "sessions" in state:
+                    active_id = state.get("active_session_id")
+                    sessions_summary = {}
+                    for sid, s in state.get("sessions", {}).items():
+                        sessions_summary[sid] = {
+                            "name": s.get("name"),
+                            "phase": s.get("phase"),
+                            "step": s.get("step"),
+                            "system": s.get("system"),
+                            "players": s.get("players", []),
+                            "characters": list(s.get("characters", {}).keys()),
+                            "world_setting": s.get("world", {}).get("setting"),
+                            "is_active": sid == active_id,
+                        }
+                    return {
+                        "found": True,
+                        "format": "v2_multi_session",
+                        "is_active": record.is_active,
+                        "active_session_id": active_id,
+                        "sessions_count": len(sessions_summary),
+                        "sessions": sessions_summary,
+                        "full_state": state,
+                    }
+                # Legacy v1 flat format
                 return {
                     "found": True,
+                    "format": "v1_legacy",
                     "is_active": record.is_active,
-                    "phase": record.state_json.get("phase"),
-                    "step": record.state_json.get("step"),
-                    "characters": list(record.state_json.get("characters", {}).keys()),
-                    "world_setting": record.state_json.get("world", {}).get("setting"),
-                    "full_state": record.state_json,
+                    "phase": state.get("phase"),
+                    "step": state.get("step"),
+                    "characters": list(state.get("characters", {}).keys()),
+                    "world_setting": state.get("world", {}).get("setting"),
+                    "full_state": state,
                 }
             return {"found": False, "chat_id": chat_id}
 

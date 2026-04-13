@@ -32,40 +32,53 @@ from src.memory_services.models import (
 logger = structlog.get_logger()
 
 # Extraction prompt for LLM
-EXTRACTION_PROMPT = """Ты — система памяти умного Telegram-бота. Проанализируй диалог и извлеки полезную информацию.
+EXTRACTION_PROMPT = """Ты — система долгосрочной памяти умного Telegram-бота. Твоя задача — извлечь ТОЛЬКО самую ценную и долговечную информацию из диалога.
 
-Извлеки:
-1. ФАКТЫ о людях (профессия, хобби, привычки, навыки)
-2. ПРЕДПОЧТЕНИЯ (что любят, что ненавидят, вкусы)
-3. СВЯЗИ между людьми (друзья, коллеги, отношения)
-4. ТЕМЫ разговора (основные темы обсуждения)
-5. ВАЖНЫЕ СОБЫТИЯ (планы, достижения, происшествия)
-6. ПЛАНЫ (намерения, будущие действия)
-7. ГРУППОВЫЕ ПРАВИЛА (нормы чата, мемы, локальные шутки)
+УРОВНИ ВАЖНОСТИ (выбирай строго):
 
-ПРАВИЛА:
-- Игнорируй шум: приветствия, флуд, бессмысленные сообщения
-- Запоминай только то, что может быть полезно в будущем
-- Если человек повторяет что-то несколько раз — это важно
-- Не выдумывай факты — только то, что явно сказано
-- Для каждого элемента укажи user_id если это о конкретном человеке
+🔴 ПОСТОЯННЫЕ ФАКТЫ (ttl=null, confidence >= 0.8):
+Сохраняй ТОЛЬКО если информация явно подтверждена и устойчива:
+- Профессия, место работы, должность
+- Город / страна проживания
+- Семья (дети, партнёр, родители)
+- Устойчивое хобби (упоминается как постоянное занятие)
+- Язык, специализация, ключевой навык
+- Важная черта характера (подтверждённая)
 
-Ответь СТРОГО в формате JSON:
+🟡 ПОЛУПОСТОЯННЫЕ (ttl=2592000, confidence >= 0.65):
+- Текущий значимый проект или цель
+- Сильное выраженное предпочтение/антипатия
+- Значимые отношения между участниками чата
+
+🟢 ВРЕМЕННЫЕ (ttl=604800, confidence >= 0.6):
+- Конкретные ближайшие планы (с датой или сроком)
+- Актуальная проблема которую решают прямо сейчас
+- Значимое недавнее событие
+
+СТРОГИЕ ПРАВИЛА:
+- MAX 3 факта на весь диалог. Лучше меньше, но точнее.
+- НЕ извлекай: приветствия, "ок", "да", "нет", флуд, риторические фразы
+- НЕ извлекай: факты об игровых персонажах (RPG, DnD контекст)
+- НЕ выдумывай — только то, что явно и конкретно сказано
+- Если уверенность < 0.6 — лучше не сохранять
+- Для каждого факта укажи user_id если это о конкретном человеке
+
+Ответь СТРОГО в формате JSON (без пояснений, только JSON):
 ```json
 {{
   "items": [
     {{
-      "type": "fact|preference|relation|topic|event|plan|group_rule|user_trait|joke",
-      "content": "краткое описание факта",
-      "user_id": 12345 или null,
-      "confidence": 0.0-1.0,
-      "tags": ["тег1", "тег2"],
-      "ttl_seconds": 86400 или null для постоянных
+      "type": "fact|preference|relation|event|plan|group_rule",
+      "content": "чёткое краткое описание (1 предложение)",
+      "user_id": 12345,
+      "confidence": 0.85,
+      "tags": ["профессия"],
+      "ttl_seconds": null
     }}
   ],
-  "topics": ["основные темы разговора"],
-  "summary": "краткое содержание диалога в 2-3 предложениях",
-  "key_events": ["важные события из диалога"]
+  "topics": ["главные темы (max 3)"],
+  "summary": "суть диалога в 1-2 предложениях",
+  "key_events": ["только реально важные события"]
 }}
 ```
 
@@ -201,12 +214,14 @@ class ExtractionService:
 
     async def _llm_extract(self, conversation: str) -> ExtractionResult:
         """Call LLM to extract structured memory."""
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%d.%m.%Y")
         prompt = EXTRACTION_PROMPT.format(conversation=conversation)
 
         messages = [
             {
                 "role": "system",
-                "content": "Ты — система извлечения фактов из диалогов. Отвечай строго в формате JSON.",
+                "content": f"Сегодня {today}. Ты — система извлечения фактов из диалогов. Отвечай строго в формате JSON.",
             },
             {"role": "user", "content": prompt},
         ]
@@ -267,7 +282,7 @@ class ExtractionService:
         items: list[ExtractedMemoryItem],
         chat_id: int,
     ) -> list[ExtractedMemoryItem]:
-        """Filter out noise and deduplicate items."""
+        """Filter out noise and deduplicate items within the batch."""
         if not items:
             return []
 
@@ -276,43 +291,90 @@ class ExtractionService:
 
         for item in items:
             # Skip empty content
-            if not item.content or len(item.content.strip()) < 3:
+            if not item.content or len(item.content.strip()) < 10:
                 continue
 
-            # Skip very low confidence
-            if item.confidence < 0.3:
+            # Raise confidence threshold — quality over quantity
+            if item.confidence < 0.6:
                 continue
 
-            # Deduplicate by content similarity
-            content_key = item.content.lower()[:50]
+            # Deduplicate within batch by normalized content
+            content_key = item.content.lower().strip()[:80]
             if content_key in seen_contents:
                 continue
             seen_contents.add(content_key)
 
             filtered.append(item)
 
-        return filtered
+        # Hard cap: max 3 facts per batch (quality over quantity)
+        return filtered[:3]
+
+    def _is_duplicate_content(self, content: str, existing_contents: list[str]) -> bool:
+        """Check if content is semantically similar to existing items."""
+        norm = content.lower().strip()
+        norm_key = norm[:100]
+        for existing in existing_contents:
+            existing_norm = existing.lower().strip()[:100]
+            # Overlap check: if 70%+ of characters match at the start
+            min_len = min(len(norm_key), len(existing_norm))
+            if min_len > 20:
+                common = sum(a == b for a, b in zip(norm_key, existing_norm))
+                if common / min_len >= 0.7:
+                    return True
+        return False
 
     async def _save_items(
         self,
         items: list[ExtractedMemoryItem],
         chat_id: int,
     ) -> int:
-        """Save extracted items to database with embeddings."""
+        """Save extracted items to database, deduplicating against existing items."""
         if not items:
             return 0
 
         saved_count = 0
 
         async for session in get_session():
+            # Load recent existing items to check for duplicates
+            stmt = (
+                select(MemoryItem)
+                .where(
+                    and_(
+                        MemoryItem.chat_id == chat_id,
+                        MemoryItem.is_active == True,
+                    )
+                )
+                .order_by(MemoryItem.created_at.desc())
+                .limit(50)
+            )
+            result = await session.execute(stmt)
+            existing_items = list(result.scalars().all())
+            existing_contents = [m.content for m in existing_items]
+
             for item in items:
+                # Check for duplicates in DB
+                if self._is_duplicate_content(item.content, existing_contents):
+                    # Update frequency on the most similar existing item instead
+                    norm = item.content.lower().strip()[:100]
+                    for existing in existing_items:
+                        existing_norm = existing.content.lower().strip()[:100]
+                        min_len = min(len(norm), len(existing_norm))
+                        if min_len > 20:
+                            common = sum(a == b for a, b in zip(norm, existing_norm))
+                            if common / min_len >= 0.7:
+                                existing.frequency = (existing.frequency or 1) + 1
+                                existing.confidence = min(1.0, max(existing.confidence, item.confidence))
+                                session.add(existing)
+                                logger.debug("Duplicate detected, incrementing frequency", content=item.content[:60])
+                                break
+                    continue
+
                 # Generate embedding
                 embedding = await embedding_service.embed_text(item.content)
 
                 # Map type
                 memory_type = _TYPE_MAP.get(item.type, MemoryType.FACT)
 
-                # Create memory item
                 memory_item = MemoryItem(
                     chat_id=chat_id,
                     user_id=item.user_id,
@@ -328,6 +390,7 @@ class ExtractionService:
                 )
 
                 session.add(memory_item)
+                existing_contents.append(item.content)
                 saved_count += 1
 
             await session.commit()

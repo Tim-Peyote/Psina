@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 from src.skill_system.registry import skill_registry
 from src.skill_system.state_manager import skill_state_manager
-from src.database.models import Skill, SkillState, SkillEvent
+from src.database.models import Skill, SkillState, SkillEvent, Reminder
 from src.database.session import get_session
 from sqlalchemy import select, and_, func
 
@@ -169,4 +169,150 @@ async def list_skill_events(
                 created_at=e.created_at.isoformat() if e.created_at else None,
             )
             for e in events
+        ]
+
+
+# ========== RPG SESSIONS ==========
+
+
+class RpgSessionResponse(BaseModel):
+    session_id: str
+    name: str
+    phase: str
+    system: str
+    players_count: int
+    created_by: int
+    is_active: bool
+
+
+@router.get("/agent_rpg/sessions", response_model=list[RpgSessionResponse], summary="List RPG sessions for a chat")
+async def list_rpg_sessions(chat_id: int = Query(..., description="Chat ID")) -> list[RpgSessionResponse]:
+    """List all RPG campaign sessions for a specific chat."""
+    state = await skill_state_manager.get_state("agent_rpg", chat_id, default={})
+    if not isinstance(state, dict) or "sessions" not in state:
+        return []
+
+    active_id = state.get("active_session_id")
+    sessions = state.get("sessions", {})
+
+    return [
+        RpgSessionResponse(
+            session_id=sid,
+            name=s.get("name", sid),
+            phase=s.get("phase", "unknown"),
+            system=s.get("system", ""),
+            players_count=len(s.get("players", [])),
+            created_by=s.get("created_by", 0),
+            is_active=(sid == active_id),
+        )
+        for sid, s in sessions.items()
+    ]
+
+
+@router.delete("/agent_rpg/sessions/{session_id}", summary="Delete a specific RPG session")
+async def delete_rpg_session(session_id: str, chat_id: int = Query(...)) -> dict:
+    """Delete a specific RPG campaign session from a chat's state."""
+    state = await skill_state_manager.get_state("agent_rpg", chat_id, default={})
+    if not isinstance(state, dict) or session_id not in state.get("sessions", {}):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found for chat {chat_id}")
+
+    del state["sessions"][session_id]
+    if state.get("active_session_id") == session_id:
+        state["active_session_id"] = None
+
+    await skill_state_manager.set_state("agent_rpg", chat_id, state)
+    return {"status": "deleted", "session_id": session_id, "chat_id": chat_id}
+
+
+# ========== NOTES ==========
+
+
+class NoteResponse(BaseModel):
+    id: str
+    title: str
+    content: str
+    tags: list[str]
+    user_id: int
+    created_at: str | None
+
+
+@router.get("/agent_notes/notes", response_model=list[NoteResponse], summary="List notes for a chat")
+async def list_notes(chat_id: int = Query(..., description="Chat ID")) -> list[NoteResponse]:
+    """List all notes stored by agent_notes for a specific chat."""
+    state = await skill_state_manager.get_state("agent_notes", chat_id, default={"notes": []})
+    if not isinstance(state, dict):
+        return []
+
+    notes = state.get("notes", [])
+    return [
+        NoteResponse(
+            id=n.get("id", ""),
+            title=n.get("title", ""),
+            content=n.get("content", ""),
+            tags=n.get("tags", []),
+            user_id=n.get("user_id", 0),
+            created_at=n.get("created_at"),
+        )
+        for n in notes
+    ]
+
+
+@router.delete("/agent_notes/notes/{note_id}", summary="Delete a specific note")
+async def delete_note(note_id: str, chat_id: int = Query(...)) -> dict:
+    """Delete a specific note from a chat's notes state."""
+    state = await skill_state_manager.get_state("agent_notes", chat_id, default={"notes": []})
+    if not isinstance(state, dict):
+        raise HTTPException(status_code=404, detail="Notes state not found")
+
+    notes = state.get("notes", [])
+    original_count = len(notes)
+    state["notes"] = [n for n in notes if n.get("id") != note_id]
+
+    if len(state["notes"]) == original_count:
+        raise HTTPException(status_code=404, detail=f"Note '{note_id}' not found")
+
+    await skill_state_manager.set_state("agent_notes", chat_id, state)
+    return {"status": "deleted", "note_id": note_id, "chat_id": chat_id}
+
+
+# ========== REMINDERS ==========
+
+
+class ReminderResponse(BaseModel):
+    id: int
+    chat_id: int
+    user_id: int
+    target_user_id: int | None
+    content: str
+    remind_at: str
+    is_sent: bool
+    created_at: str | None
+
+
+@router.get("/agent_reminders/active", response_model=list[ReminderResponse], summary="List active reminders for a chat")
+async def list_active_reminders(
+    chat_id: int = Query(..., description="Chat ID"),
+    include_sent: bool = Query(False),
+) -> list[ReminderResponse]:
+    """List reminders for a specific chat."""
+    async for session in get_session():
+        stmt = select(Reminder).where(Reminder.chat_id == chat_id)
+        if not include_sent:
+            stmt = stmt.where(Reminder.is_sent == False)
+        stmt = stmt.order_by(Reminder.remind_at)
+        result = await session.execute(stmt)
+        reminders = list(result.scalars().all())
+
+        return [
+            ReminderResponse(
+                id=r.id,
+                chat_id=r.chat_id,
+                user_id=r.user_id,
+                target_user_id=r.target_user_id,
+                content=r.content,
+                remind_at=r.remind_at.isoformat() if r.remind_at else "",
+                is_sent=r.is_sent,
+                created_at=r.created_at.isoformat() if r.created_at else None,
+            )
+            for r in reminders
         ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import structlog
@@ -15,7 +16,21 @@ logger = structlog.get_logger()
 
 
 class SkillStateManager:
-    """Manage per-chat isolated state for each skill."""
+    """Manage per-chat isolated state for each skill.
+
+    Per-(skill_slug, chat_id) asyncio locks prevent lost-update races when
+    multiple messages from the same chat are processed concurrently.
+    """
+
+    def __init__(self) -> None:
+        # (skill_slug, chat_id) -> asyncio.Lock
+        self._locks: dict[tuple[str, int], asyncio.Lock] = {}
+
+    def _get_lock(self, skill_slug: str, chat_id: int) -> asyncio.Lock:
+        key = (skill_slug, chat_id)
+        if key not in self._locks:
+            self._locks[key] = asyncio.Lock()
+        return self._locks[key]
 
     async def get_state(
         self,
@@ -73,11 +88,17 @@ class SkillStateManager:
         key: str,
         value,
     ) -> dict:
-        """Update a single field in skill state."""
-        state = await self.get_state(skill_slug, chat_id, default={})
-        state[key] = value
-        await self.set_state(skill_slug, chat_id, state)
-        return state
+        """Update a single field in skill state (atomic get+set under lock)."""
+        async with self._get_lock(skill_slug, chat_id):
+            state = await self.get_state(skill_slug, chat_id, default={})
+            state[key] = value
+            await self.set_state(skill_slug, chat_id, state)
+            return state
+
+    def lock(self, skill_slug: str, chat_id: int):
+        """Return asyncio.Lock for (skill_slug, chat_id). Use as async context manager
+        when the caller needs to do its own atomic get+set sequence."""
+        return self._get_lock(skill_slug, chat_id)
 
     async def delete_state(
         self,
