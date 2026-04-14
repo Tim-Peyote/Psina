@@ -411,7 +411,11 @@ class Orchestrator:
 
         # Инструкции от вайба и цензуры
         vibe_instruction = vibe_adapter.get_style_instruction(msg.chat_id)
-        censorship_instruction = censorship_manager.get_instruction_for_llm(msg.chat_id)
+        vibe_profile = vibe_adapter.get_profile(msg.chat_id)
+        censorship_instruction = censorship_manager.get_instruction_for_llm(
+            msg.chat_id,
+            mate_level=vibe_profile.mate_level,
+        )
 
         # Эмоциональное состояние
         emo_state = await emotional_state_manager.get_state(msg.chat_id)

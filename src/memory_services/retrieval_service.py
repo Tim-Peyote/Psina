@@ -6,7 +6,9 @@ Returns top-k most relevant memory items for a query.
 
 from __future__ import annotations
 
+import asyncio
 import math
+import re
 from datetime import datetime, timezone
 
 import structlog
@@ -51,10 +53,16 @@ class RetrievalService:
             query, chat_id, user_id, memory_types, top_k * 2, include_inactive
         )
 
-        # Keyword search fallback
-        keyword_results = await self._keyword_search(
-            query, chat_id, user_id, memory_types, top_k * 2, include_inactive
-        )
+        # Keyword search — основной запрос + расширенные вариации по именам
+        expanded_queries = self._expand_query(query)
+        keyword_tasks = [
+            self._keyword_search(q, chat_id, user_id, memory_types, top_k, include_inactive)
+            for q in expanded_queries
+        ]
+        keyword_results_lists = await asyncio.gather(*keyword_tasks)
+        keyword_results: list[MemorySearchResult] = []
+        for results_list in keyword_results_lists:
+            keyword_results.extend(results_list)
 
         # Merge and deduplicate
         merged = self._merge_results(vector_results, keyword_results)
@@ -218,7 +226,7 @@ class RetrievalService:
                 results.append(
                     MemorySearchResult(
                         item_id=row.id,
-                        type=row.type,
+                        type=row.type.value if hasattr(row.type, "value") else str(row.type),
                         content=row.content,
                         score=1.0 - min(row.distance, 1.0),  # Convert distance to similarity
                         chat_id=row.chat_id,
@@ -352,6 +360,26 @@ class RetrievalService:
                 )
 
         return results
+
+    def _expand_query(self, query: str) -> list[str]:
+        """Generate additional search queries based on names in the original query.
+
+        Extracts proper nouns (capitalized Russian/Latin words) and creates
+        targeted queries to pull related facts about those people.
+        No LLM calls — pure regex, cheap and fast.
+        """
+        queries = [query]
+        if not query:
+            return queries
+
+        # Извлекаем имена собственные (заглавная буква + 2+ строчных)
+        names = re.findall(r'\b[А-ЯA-Z][а-яa-z]{2,}\b', query)
+        for name in names[:2]:  # max 2 имени
+            queries.append(f"{name} любит")
+            queries.append(f"{name} работает")
+            queries.append(f"{name} живёт")
+
+        return queries[:5]  # max 5 запросов
 
     def _merge_results(
         self,

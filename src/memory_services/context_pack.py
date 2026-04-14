@@ -330,11 +330,26 @@ class ContextPackBuilder:
                 "content": f"Пользователь отвечает на сообщение {reply_author}: «{reply_text}»",
             })
 
-        # Add relevant memories
+        # Add relevant memories — grouped by type for better LLM reasoning
         if pack.relevant_memories:
+            _type_labels: dict[str, str] = {
+                "fact": "ФАКТЫ",
+                "preference": "ПРЕДПОЧТЕНИЯ",
+                "relationship": "ОТНОШЕНИЯ",
+                "event": "СОБЫТИЯ",
+                "group_rule": "ПРАВИЛА ЧАТА",
+            }
+            grouped: dict[str, list[str]] = {}
+            for memory in pack.relevant_memories:
+                type_key = memory.type  # always a string — normalised in retrieval_service
+                label = _type_labels.get(type_key, "ПРОЧЕЕ")
+                grouped.setdefault(label, []).append(memory.content)
+
             memory_text = "🧠 Важная память по теме:\n"
-            for i, memory in enumerate(pack.relevant_memories, 1):
-                memory_text += f"{i}. {memory.content}\n"
+            for label, items in grouped.items():
+                memory_text += f"\n{label}:\n"
+                for content in items:
+                    memory_text += f"- {content}\n"
             messages.append({"role": "system", "content": memory_text.strip()})
 
         # Add web context

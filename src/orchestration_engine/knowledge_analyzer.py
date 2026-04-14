@@ -173,6 +173,18 @@ class KnowledgeAnalyzer:
                     level=ConfidenceLevel.UNCERTAIN,
                 ))
 
+        # 5b. Нейронные связи: подтягиваем связи целевого человека из relationship_engine
+        if report.target_person:
+            relationship_items = await self._enrich_with_relationships(
+                report.target_person, msg.chat_id
+            )
+            # Добавляем только те связи, которых ещё нет в списке
+            existing_contents = {r.content for r in report.relationships}
+            for item in relationship_items:
+                if item.content not in existing_contents:
+                    report.relationships.append(item)
+                    existing_contents.add(item.content)
+
         # 6. Решаем — достаточно ли информации
         total_items = len(report.facts) + len(report.preferences) + len(report.relationships)
         certain_count = sum(
@@ -325,6 +337,59 @@ class KnowledgeAnalyzer:
         elif confidence >= 0.4:
             return ConfidenceLevel.UNCERTAIN
         return ConfidenceLevel.UNKNOWN
+
+    async def _enrich_with_relationships(
+        self,
+        target: str,
+        chat_id: int,
+        limit: int = 3,
+    ) -> list[KnowledgeItem]:
+        """
+        Найти связи целевого человека из памяти — нейронные связи.
+
+        Отдельный запрос только по типу RELATIONSHIP, независимо от общего
+        лимита relevance-отсортированных фактов. Гарантирует, что данные
+        о связях человека всегда попадают в контекст ответа.
+        """
+        from sqlalchemy import select, and_
+        from src.database.session import get_session
+
+        async for session in get_session():
+            stmt = (
+                select(MemoryItem)
+                .where(
+                    and_(
+                        MemoryItem.chat_id == chat_id,
+                        MemoryItem.type == MemoryType.RELATIONSHIP,
+                        MemoryItem.content.ilike(f"%{target}%"),
+                        MemoryItem.is_active == True,
+                    )
+                )
+                .order_by(MemoryItem.confidence.desc())
+                .limit(limit)
+            )
+
+            result = await session.execute(stmt)
+            memories = list(result.scalars().all())
+
+            items = []
+            for memory in memories:
+                items.append(KnowledgeItem(
+                    content=memory.content,
+                    confidence=memory.confidence,
+                    source=memory.source,
+                    level=self._confidence_to_level(memory.confidence),
+                ))
+
+            logger.debug(
+                "Relationship enrichment",
+                target=target,
+                chat_id=chat_id,
+                found=len(items),
+            )
+            return items
+
+        return []
 
     def _generate_clarification(self, topic: str | None, target: str | None) -> str | None:
         """Сгенерировать запрос уточнения."""
