@@ -268,6 +268,12 @@ class Orchestrator:
         if decision.route == MessageRoute.GAME_INTERACTION:
             return await self._handle_game_command(msg)
 
+        # Прямая агрессия к боту — ответить несмотря на роутинг
+        if (abuse_context is not None
+                and abuse_result.get("type") == "direct"
+                and decision.route in (MessageRoute.BACKGROUND, MessageRoute.IGNORE)):
+            return await self._generate_response(msg, context, decision, abuse_context=abuse_context)
+
         # Background — только запомнить
         if decision.route == MessageRoute.BACKGROUND:
             return None
@@ -278,7 +284,7 @@ class Orchestrator:
 
         # Direct call или session continuation
         if decision.should_respond:
-            return await self._generate_response(msg, context, decision)
+            return await self._generate_response(msg, context, decision, abuse_context=abuse_context)
 
         # Не должен отвечать
         return None
@@ -402,6 +408,7 @@ class Orchestrator:
         msg: NormalizedMessage,
         context: dict,
         decision: RoutingDecision,
+        abuse_context: str | None = None,
     ) -> str | None:
         """Сгенерировать ответ с анализом знаний."""
         # Обновляем сессию
