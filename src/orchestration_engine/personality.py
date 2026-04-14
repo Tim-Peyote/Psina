@@ -7,8 +7,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-import random
-
 import structlog
 
 from src.config import settings
@@ -86,38 +84,6 @@ class BotPersonality:
             "surprise": ["ого", "вау", "серьёзно", "ничего себе", "блин", "жесть", "охренеть"],
             "support": ["грустно", "плохо", "тяжело", "устал", "хреново", "хуёво", "пиздец"],
         }
-        self._abuse_first = [
-            "Ок, понял.",
-            "Ладно, не буду лезть.",
-            "Принял.",
-            "Хорошо, я услышал.",
-        ]
-
-        self._abuse_warning = [
-            "Знаешь, мне не нравится тон. Могу просто замолчать если хочешь.",
-            "Слушай, давай без такого. Я тут не для того чтобы меня поливали.",
-            "Мне неприятно когда так общаются. Давай спокойнее.",
-        ]
-
-        self._abuse_strict = [
-            "Мне не нравится как ты со мной общаешься. Ещё раз — и я просто замолчу. Это не угроза, а граница.",
-            "Я уже говорил что мне это неприятно. Продолжишь — уйду в молчанку.",
-            "Уважение — двусторонняя вещь. Я тебя уважаю, жду того же.",
-        ]
-
-        self._abuse_silence = [
-            "Мне неприятно так общаться. Я замолчу на 30 минут. Может, нам обоим стоит остыть.",
-            "Я не буду участвовать в таком диалоге. 30 минут тишины.",
-            "Это уже перебор. Я на паузе 30 минут.",
-        ]
-
-        # ===== РЕАКЦИЯ НА ТРАВЛЮ В ЧАТЕ =====
-        self._bullying_responses = [
-            "Мне не нравится что тут происходит. Если это продолжится — я не буду участвовать.",
-            "Ребят, мне некомфортно от такого общения. Может, спокойнее?",
-            "Слушайте, я тут не для того чтобы на это смотреть. Давайте без токсичности.",
-            "Мне не нравится как вы общаетесь друг с другом. Это не моё дело, но молчать не буду.",
-        ]
 
     # ===== МЕТОДЫ ПОЛУЧЕНИЯ ЭМОЦИОНАЛЬНОГО КОНТЕКСТА =====
 
@@ -134,22 +100,6 @@ class BotPersonality:
     def get_silence_response(self) -> str:
         """Response when told to be silent."""
         return "Ладно, замолкаю."
-
-    def get_abuse_response(self, level: str) -> str:
-        """Реакция на агрессию по уровню."""
-        if level == "first":
-            return random.choice(self._abuse_first)
-        elif level == "warning":
-            return random.choice(self._abuse_warning)
-        elif level == "strict":
-            return random.choice(self._abuse_strict)
-        elif level == "silence":
-            return random.choice(self._abuse_silence)
-        return "..."
-
-    def get_bullying_response(self) -> str:
-        """Реакция на травлю в чате."""
-        return random.choice(self._bullying_responses)
 
     def adjust_tone(self, message_text: str) -> str:
         """
@@ -247,6 +197,7 @@ class BotPersonality:
         activity_level: str = "normal",
         censorship_instruction: str = "",
         vibe_instruction: str = "",
+        abuse_context: str | None = None,
     ) -> str:
         """
         Полный системный промпт с характером, цензурой и вайбом.
@@ -479,6 +430,10 @@ class BotPersonality:
         knowledge = context.get("knowledge_context", "") if context else ""
         if knowledge:
             prompt += f"ТВОИ ЗНАНИЯ ПО ТЕМЕ (только из ЭТОГО чата!):\n{knowledge}\n\n"
+
+        # Контекст агрессии (если есть — вставляем прямо перед финальным напоминанием)
+        if abuse_context:
+            prompt += f"\n{abuse_context}\n\n"
 
         # Финальное напоминание
         prompt += (

@@ -181,19 +181,44 @@ class Orchestrator:
 
         # ===== ФАЗА 1.6: ДЕТЕКЦИЯ АГРЕССИИ =====
         abuse_result = await abuse_detector.analyze(msg)
-        if abuse_result["is_abuse"]:
-            if abuse_result["action"] == "auto_silence":
-                settings_obj = self._get_settings(msg.chat_id)
-                settings_obj.silence(30)
-                return abuse_result["response_text"]
-            if abuse_result["response_text"] and abuse_result["action"] in ("warning", "strict_warning"):
-                return abuse_result["response_text"]
+        abuse_context: str | None = None
+        if abuse_result["is_abuse"] and abuse_result["action"] != "ignore":
+            action = abuse_result["action"]
+            count = abuse_result.get("abuse_count", 1)
+            if action == "auto_silence":
+                self._get_settings(msg.chat_id).silence(30)
+                abuse_context = (
+                    f"РЕЖИМ ОТВЕТА: АГРЕССИЯ (авто-молчание). Пользователь грубит {count}-й раз подряд. "
+                    "Ответь один раз органично — можешь послать, огрызнуться, устало попрощаться. "
+                    "После этого ответа бот уходит в тишину на 30 минут. "
+                    "НЕ говори «я замолчу» как угрозу — просто сделай это, попрощавшись по-своему."
+                )
+            elif action == "strict_warning":
+                abuse_context = (
+                    f"РЕЖИМ ОТВЕТА: АГРЕССИЯ (строгое предупреждение #{count}). Тебя грубо задели. "
+                    "Можешь ответить жёстко, с матом если уместно по вайбу чата. "
+                    "Дай понять что ещё раз — и тебе станет неинтересно общаться."
+                )
+            elif action == "warning":
+                abuse_context = (
+                    f"РЕЖИМ ОТВЕТА: АГРЕССИЯ (предупреждение #{count}). Тебя задели. "
+                    "Отреагируй органично — огрызнись, поддень, пошути в ответ. "
+                    "Не читай лекции и не угрожай молчанием — просто ответь как живой человек."
+                )
+
+        # Команды регулировки характера (обрабатываем но не прерываем пайплайн)
+        personality_cmd = vibe_adapter.detect_personality_command(msg.text)
+        if personality_cmd:
+            import asyncio
+            asyncio.ensure_future(vibe_adapter.apply_personality_command(msg.chat_id, personality_cmd))
 
         # ===== ФАЗА 1.7: LLM-МАРШРУТИЗАЦИЯ =====
         # LLM-роутер решает: поиск / скилл / ответить / молчать
-        route_decision = await self._llm_route(msg)
-        if route_decision is not None:
-            return route_decision  # "" = hard silence, non-empty = actual response
+        # Если есть контекст агрессии — пропускаем роутер, бот должен ответить
+        if abuse_context is None:
+            route_decision = await self._llm_route(msg)
+            if route_decision is not None:
+                return route_decision  # "" = hard silence, non-empty = actual response
 
         # ===== ФАЗА 2: БЫСТРЫЕ КОМАНДЫ (fast-path) =====
 
@@ -427,6 +452,7 @@ class Orchestrator:
             activity_level=activity,
             censorship_instruction=censorship_instruction,
             vibe_instruction=vibe_instruction,
+            abuse_context=abuse_context,
         )
 
         # Добавляем эмоциональное состояние в промпт

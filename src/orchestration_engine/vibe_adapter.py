@@ -52,6 +52,10 @@ class VibeProfile:
     # Последнее обновление
     last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
+    # Регулируемые веса характера (0.0–1.0, меняются по просьбе пользователей)
+    aggression_level: float = 0.5  # 0=мягкий, 1=агрессивный
+    sarcasm_level: float = 0.6     # 0=серьёзный, 1=саркастичный
+
     @property
     def is_formal(self) -> bool:
         return self.formality > 0.7
@@ -128,6 +132,8 @@ class VibeAdapter:
                     mood=row.mood,
                     messages_analyzed=row.messages_analyzed,
                     last_updated=row.updated_at or datetime.now(timezone.utc),
+                    aggression_level=getattr(row, "aggression_level", 0.5),
+                    sarcasm_level=getattr(row, "sarcasm_level", 0.6),
                 )
                 self._profiles[chat_id] = profile
                 return profile
@@ -146,6 +152,8 @@ class VibeAdapter:
                 row.emoji_frequency = profile.emoji_frequency
                 row.mood = profile.mood
                 row.messages_analyzed = profile.messages_analyzed
+                row.aggression_level = profile.aggression_level
+                row.sarcasm_level = profile.sarcasm_level
             else:
                 session.add(
                     ChatVibeProfile(
@@ -156,6 +164,8 @@ class VibeAdapter:
                         emoji_frequency=profile.emoji_frequency,
                         mood=profile.mood,
                         messages_analyzed=profile.messages_analyzed,
+                        aggression_level=profile.aggression_level,
+                        sarcasm_level=profile.sarcasm_level,
                     )
                 )
             await session.commit()
@@ -176,6 +186,8 @@ class VibeAdapter:
                     mood=row.mood,
                     messages_analyzed=row.messages_analyzed,
                     last_updated=row.updated_at or datetime.now(timezone.utc),
+                    aggression_level=getattr(row, "aggression_level", 0.5),
+                    sarcasm_level=getattr(row, "sarcasm_level", 0.6),
                 )
                 self._profiles[profile.chat_id] = profile
         logger.info("Vibe profiles loaded from DB", count=len(self._profiles))
@@ -248,6 +260,42 @@ class VibeAdapter:
 
         return profile
 
+    _SOFTER_TRIGGERS = [
+        "скромнее", "потише", "помягче", "поласковее", "поаккуратнее",
+        "вежливее", "культурнее", "поспокойнее", "без грубостей",
+    ]
+    _HARDER_TRIGGERS = [
+        "грубее", "резче", "жёстче", "жестче", "раскрепощённее", "раскрепощеннее",
+        "можешь материться", "не стесняйся", "смелее", "без цензуры на характер",
+    ]
+
+    def detect_personality_command(self, text: str) -> str | None:
+        """Детектировать команду регулировки характера. Возвращает 'softer' / 'harder' / None."""
+        text_lower = text.lower()
+        if any(t in text_lower for t in self._SOFTER_TRIGGERS):
+            return "softer"
+        if any(t in text_lower for t in self._HARDER_TRIGGERS):
+            return "harder"
+        return None
+
+    async def apply_personality_command(self, chat_id: int, direction: str) -> None:
+        """Применить команду регулировки характера и сохранить в БД."""
+        profile = self.get_profile(chat_id)
+        if direction == "softer":
+            profile.aggression_level = max(0.0, profile.aggression_level - 0.2)
+            profile.sarcasm_level = max(0.0, profile.sarcasm_level - 0.2)
+        elif direction == "harder":
+            profile.aggression_level = min(1.0, profile.aggression_level + 0.2)
+            profile.sarcasm_level = min(1.0, profile.sarcasm_level + 0.2)
+        await self._save_profile_to_db(profile)
+        logger.info(
+            "Personality weights adjusted",
+            chat_id=chat_id,
+            direction=direction,
+            aggression=profile.aggression_level,
+            sarcasm=profile.sarcasm_level,
+        )
+
     def get_style_instruction(self, chat_id: int) -> str:
         """
         Получить инструкцию стиля для LLM.
@@ -292,6 +340,18 @@ class VibeAdapter:
         # Поведенческая адаптация
         if profile.mate_level > 0.5 and not profile.is_formal:
             instructions.append("Чат токсичный/неформальный — будь раскрепощённым: шути жёстче, отвечай сарказмом, можешь писать короткие дерзкие ответы.")
+
+        # Регулируемые веса характера
+        if profile.aggression_level < 0.3:
+            instructions.append("ХАРАКТЕР (агрессивность низкая): Держи тон мягким и спокойным, не огрызайся даже если провоцируют.")
+        elif profile.aggression_level > 0.7:
+            instructions.append("ХАРАКТЕР (агрессивность высокая): Можешь отвечать резко и грубо, не сдерживайся если достали.")
+        # (средний уровень — не добавляем инструкцию, поведение по умолчанию)
+
+        if profile.sarcasm_level < 0.3:
+            instructions.append("ХАРАКТЕР (сарказм низкий): Минимум иронии и сарказма, говори прямо.")
+        elif profile.sarcasm_level > 0.7:
+            instructions.append("ХАРАКТЕР (сарказм высокий): Ирония и сарказм — твоё оружие, используй свободно.")
 
         return "\n".join(instructions)
 

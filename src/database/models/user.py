@@ -273,4 +273,6 @@ class ChatVibeProfile(Base):
     emoji_frequency: Mapped[float] = mapped_column(Float, default=0.2)
     mood: Mapped[str] = mapped_column(String(32), default="neutral")
     messages_analyzed: Mapped[int] = mapped_column(Integer, default=0)
+    aggression_level: Mapped[float] = mapped_column(Float, default=0.5)
+    sarcasm_level: Mapped[float] = mapped_column(Float, default=0.6)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

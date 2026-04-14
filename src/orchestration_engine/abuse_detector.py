@@ -119,7 +119,7 @@ class AbuseDetector:
             "severity": float,
             "type": "direct" | "indirect" | "none",
             "action": "ignore" | "warning" | "strict_warning" | "auto_silence",
-            "response_text": str | None,
+            "abuse_count": int,
         }
         """
         text_lower = msg.text.lower()
@@ -150,7 +150,7 @@ class AbuseDetector:
                 "severity": 0.0,
                 "type": "none",
                 "action": "ignore",
-                "response_text": None,
+                "abuse_count": 0,
             }
 
         # 2. Записываем в профиль (load from Redis)
@@ -173,11 +173,9 @@ class AbuseDetector:
         score = profile.total_abuse_score
 
         action = "ignore"
-        response_text = None
 
         if score >= self.severe_threshold:
             action = "auto_silence"
-            response_text = self._get_auto_silence_response(count)
             profile.auto_silenced_until = datetime.now(timezone.utc) + timedelta(minutes=30)
             logger.warning(
                 "Auto-silenced user for abuse",
@@ -187,14 +185,10 @@ class AbuseDetector:
             )
         elif score >= self.medium_threshold:
             action = "strict_warning"
-            response_text = self._get_strict_warning_response(count)
         elif score >= self.mild_threshold:
             action = "warning"
-            response_text = self._get_warning_response(count)
         else:
-            # Первый раз — спокойная реакция
             action = "ignore"
-            response_text = self._get_first_response()
 
         # Persist to Redis
         await self._save_profile(profile)
@@ -204,7 +198,7 @@ class AbuseDetector:
             "severity": severity,
             "type": abuse_type,
             "action": action,
-            "response_text": response_text,
+            "abuse_count": count,
         }
 
     def is_user_silenced(self, user_id: int) -> bool:
@@ -284,47 +278,6 @@ class AbuseDetector:
         if user_id not in self._profiles:
             self._profiles[user_id] = UserAbuseProfile(user_id=user_id)
         return self._profiles[user_id]
-
-    def _get_first_response(self) -> str:
-        """Первая реакция на агрессию."""
-        responses = [
-            "Ок, понял.",
-            "Ладно, не буду лезть.",
-            "Принял.",
-            "Хорошо, я услышал.",
-        ]
-        import random
-        return random.choice(responses)
-
-    def _get_warning_response(self, count: int) -> str:
-        """Предупреждение."""
-        responses = [
-            "Знаешь, мне не нравится тон. Могу просто замолчать если хочешь.",
-            "Слушай, давай без такого. Я тут не для того чтобы меня поливали.",
-            "Мне неприятно когда так общаются. Давай спокойнее.",
-        ]
-        import random
-        return random.choice(responses)
-
-    def _get_strict_warning_response(self, count: int) -> str:
-        """Строгое предупреждение."""
-        responses = [
-            "Мне не нравится как ты со мной общаешься. Ещё раз — и я просто замолчу. Это не угроза, а граница.",
-            "Я уже говорил что мне это неприятно. Продолжишь — уйду в молчанку.",
-            "Уважение — это двусторонняя вещь. Я тебя уважаю, и жду того же.",
-        ]
-        import random
-        return random.choice(responses)
-
-    def _get_auto_silence_response(self, count: int) -> str:
-        """Автозаглушка."""
-        responses = [
-            "Мне неприятно так общаться. Я замолчу на 30 минут. Может, нам обоим стоит остыть.",
-            "Я не буду участвовать в таком диалоге. 30 минут тишины.",
-            "Это уже перебор. Я на паузе 30 минут.",
-        ]
-        import random
-        return random.choice(responses)
 
 
 abuse_detector = AbuseDetector()
