@@ -221,7 +221,7 @@ class TriggerSystem:
         text_lower = text.lower()
 
         silence_patterns = [
-            r'(заткнись|замолчи|помолчи|тише|хватит|стоп|не\s+лезь|отвали|уйди)',
+            r'(заткнись|замолчи|помолчи|тише|не\s+лезь|отвали|уйди)',
         ]
         for p in silence_patterns:
             if re.search(p, text_lower):

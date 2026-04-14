@@ -24,6 +24,7 @@ class RouteAction:
     ANSWER_DIRECTLY = "answer_directly"
     USE_SKILL = "use_skill"
     STAY_SILENT = "stay_silent"
+    EXIT_SKILL = "exit_skill"
 
 
 class LLMRouteDecision:
@@ -58,6 +59,10 @@ class LLMRouteDecision:
     @property
     def should_be_silent(self) -> bool:
         return self.action == RouteAction.STAY_SILENT
+
+    @property
+    def should_exit_skill(self) -> bool:
+        return self.action == RouteAction.EXIT_SKILL
 
 
 class LLMRouter:
@@ -160,19 +165,26 @@ class LLMRouter:
 ВОЗМОЖНЫЕ ДЕЙСТВИЯ:
 - search: нужен поиск в интернете (факты, цены, погода, новости, "найди/погугли/поищи")
 - answer_directly: бот может ответить из контекста/памяти (приветствия, вопросы о боте, болтовня, продолжение диалога)
-- use_skill: сообщение относится к одному из навыков (игры, RPG, специальные команды)
+- use_skill: сообщение относится к одному из навыков (игры, RPG, заметки, напоминания)
 - stay_silent: сообщение не требует ответа (короткие междометия, бот не обращается к сообщению)
+- exit_skill: РЕАЛЬНЫЙ ЧЕЛОВЕК хочет выйти из скилла, прекратить игру/настройку/сессию
+  (фразы: "стоп игра", "хватит играть", "завязывай", "выйди из скилла", "не хочу играть", "прекрати", "стоп сессия")
+  ⚠️ ВАЖНО: НЕ путай с игровыми/сюжетными действиями! Если персонаж по сюжету
+  "выходит из комнаты", "бросает оружие", "уходит из города", "покидает таверну" —
+  это use_skill (game_action), а НЕ exit_skill! Exit — только когда реальный человек
+  хочет перестать играть.
 {skills_section}
 ПРАВИЛА:
-1. Если пользователь прос найти что-то в интернете ("найди", "поищи", "погугли", "сколько стоит", "какая погода", "кто выиграл") — выбери search и извлеки чистый поисковый запрос.
+1. Если пользователь просить найти что-то в интернете ("найди", "поищи", "погугли", "сколько стоит", "какая погода", "кто выиграл") — выбери search и извлеки чистый поисковый запрос.
 2. Если сообщение относится к навыку — выбери use_skill с правильным slug.
 3. Если это обычный диалог, вопрос к боту, приветствие — выбери answer_directly.
 4. Если это короткое сообщение типа "ок", "да", "нет", "ага", "lol" — выбери stay_silent.
-5. Опечатки — это нормально. "нади" = "найди", "паищи" = "поищи".
-6. Извлекай поисковый запрос без мусора: убери "найди", "в интернете", "бот", обращения.
+5. Если реальный человек хочет выйти из скилла/игры/сессии — выбери exit_skill. Не путай с сюжетными действиями персонажа!
+6. Опечатки — это нормально. "нади" = "найди", "паищи" = "поищи".
+7. Извлекай поисковый запрос без мусора: убери "найди", "в интернете", "бот", обращения.
 
 ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON (без markdown, без обёрток):
-{{"action": "search|answer_directly|use_skill|stay_silent", "search_query": "только для search", "skill_slug": "только для use_skill", "confidence": 0.95, "reasoning": "короткое объяснение"}}"""
+{{"action": "search|answer_directly|use_skill|stay_silent|exit_skill", "search_query": "только для search", "skill_slug": "только для use_skill", "confidence": 0.95, "reasoning": "короткое объяснение"}}"""
         return prompt
 
     def _build_user_message(
@@ -223,7 +235,7 @@ class LLMRouter:
         reasoning = data.get("reasoning", "")
 
         # Валидация action
-        if action not in (RouteAction.SEARCH, RouteAction.ANSWER_DIRECTLY, RouteAction.USE_SKILL, RouteAction.STAY_SILENT):
+        if action not in (RouteAction.SEARCH, RouteAction.ANSWER_DIRECTLY, RouteAction.USE_SKILL, RouteAction.STAY_SILENT, RouteAction.EXIT_SKILL):
             logger.warning("LLM routing: unknown action", action=action)
             action = RouteAction.ANSWER_DIRECTLY
 

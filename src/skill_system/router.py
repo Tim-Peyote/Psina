@@ -111,24 +111,6 @@ class SkillRouter:
 
         logger.info("All skills deactivated for chat", chat_id=chat_id)
 
-    @staticmethod
-    def contains_exit_phrase(text: str) -> bool:
-        """Проверить, содержит ли сообщение exit-фразу для скилла."""
-        text_lower = text.lower()
-        exit_phrases = [
-            "выйти из игры", "выйти из скилла", "stop skill", "/noskill",
-            "закрой игру", "закрой сессию", "закрой скилл",
-            "останови игру", "стоп игра", "стоп сессия", "стоп скилл",
-            "хватит играть", "хватит в игры", "хватит рпг",
-            "не играю", "не играем", "мы не играем", "не хочу играть",
-            "это не игра", "это не рпг",
-            "не мешай", "не лезь",
-            "заткнись", "замолчи", "замолкай",
-            "ты не для игр", "убери игру",
-            "выйди из режима", "выйди из игры",
-        ]
-        return any(w in text_lower for w in exit_phrases)
-
 
 # Singleton
 skill_router = SkillRouter()

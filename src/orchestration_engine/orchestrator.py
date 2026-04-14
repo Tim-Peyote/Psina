@@ -314,13 +314,14 @@ class Orchestrator:
             # Если поиск пустой — fallback на обычный ответ
             return None
 
+        # === ACTION: EXIT_SKILL — user wants to leave skill session ===
+        if decision.should_exit_skill:
+            await skill_router.deactivate_all_skills(msg.chat_id)
+            logger.info("Skill session exited via LLM route", chat_id=msg.chat_id)
+            return "🏁 Сессия остановлена."
+
         # === ACTION: USE_SKILL ===
         if decision.should_use_skill:
-            # Проверяем exit-фразу — если да, деактивируем все скиллы
-            if skill_router.contains_exit_phrase(msg.text):
-                await skill_router.deactivate_all_skills(msg.chat_id)
-                logger.info("Skill session exited via LLM route", chat_id=msg.chat_id)
-                return None
 
             try:
                 skill_slug = decision.skill_slug
