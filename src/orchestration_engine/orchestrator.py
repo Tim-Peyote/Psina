@@ -214,8 +214,18 @@ class Orchestrator:
 
         # ===== ФАЗА 1.7: LLM-МАРШРУТИЗАЦИЯ =====
         # LLM-роутер решает: поиск / скилл / ответить / молчать
-        # Если есть контекст агрессии — пропускаем роутер, бот должен ответить
-        if abuse_context is None:
+        # Пропускаем роутер если:
+        #   - есть контекст агрессии (бот должен ответить)
+        #   - прямой вызов по имени (HIGH confidence) — роутер не должен глушить своё же обращение
+        trigger_pre = trigger_system.evaluate(
+            msg.text,
+            is_reply=msg.reply_to_message_id is not None,
+            reply_to_bot=False,
+            in_active_session=session_manager.is_user_in_session(msg.chat_id, msg.user_id),
+            chat_id=msg.chat_id,
+        )
+        is_direct_call = trigger_pre.level == ConfidenceLevel.HIGH
+        if abuse_context is None and not is_direct_call:
             route_decision = await self._llm_route(msg)
             if route_decision is not None:
                 return route_decision  # "" = hard silence, non-empty = actual response
