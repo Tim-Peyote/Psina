@@ -9,6 +9,9 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+MSK = ZoneInfo("Europe/Moscow")
 
 import structlog
 
@@ -43,14 +46,17 @@ _INTENT_SYSTEM_TEMPLATE = """Ты — классификатор намерен�
 """
 
 _TIME_PARSE_SYSTEM_TEMPLATE = """Ты — парсер времени. Преобразуй временное выражение в ISO 8601 UTC datetime.
-Текущее время: {now}.
+Текущее время: {now} (Москва, UTC+3).
+Пользователь находится в московском часовом поясе — все его времена в МСК.
+При конвертации в UTC вычитай 3 часа (МСК = UTC+3).
 
-Ответь СТРОГО в JSON: {{"datetime": "2026-04-14T15:30:00Z", "human": "завтра в 15:30"}}
+Ответь СТРОГО в JSON: {{"datetime": "2026-04-14T12:30:00Z", "human": "в 15:30 МСК"}}
 Если не можешь распознать — {{"datetime": null, "human": null}}
 
-Примеры:
-- "через 30 минут" от 10:00 UTC → {{"datetime": "2026-04-14T10:30:00Z", "human": "через 30 минут"}}
-- "завтра в 9" от 2026-04-14 → {{"datetime": "2026-04-15T09:00:00Z", "human": "завтра в 09:00"}}
+Примеры (пользователь в МСК = UTC+3):
+- "через 30 минут" от 13:00 МСК → {{"datetime": "2026-04-14T10:30:00Z", "human": "через 30 минут"}}
+- "завтра в 9" от 2026-04-14 МСК → {{"datetime": "2026-04-15T06:00:00Z", "human": "завтра в 09:00"}}
+- "в 15:00" → {{"datetime": "2026-04-14T12:00:00Z", "human": "в 15:00"}}
 - "в пятницу в 15:00" → {{"datetime": "...", "human": "в пятницу в 15:00"}}
 """
 
@@ -79,7 +85,7 @@ async def process_message(
 
 async def _classify_intent(text: str) -> dict | None:
     """Use LLM to classify reminder operation."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(MSK).strftime("%Y-%m-%d %H:%M МСК (UTC+3)")
     system = _INTENT_SYSTEM_TEMPLATE.format(now=now)
     llm = LLMProvider.get_provider()
     try:
@@ -103,11 +109,11 @@ async def _classify_intent(text: str) -> dict | None:
 
 
 async def _parse_time_expression(expr: str) -> tuple[datetime | None, str | None]:
-    """Use LLM to parse natural language time into datetime."""
-    now = datetime.now(timezone.utc)
+    """Use LLM to parse natural language time into datetime (stored as UTC)."""
+    now_msk = datetime.now(MSK)
     llm = LLMProvider.get_provider()
 
-    system = _TIME_PARSE_SYSTEM_TEMPLATE.format(now=now.strftime("%Y-%m-%d %H:%M UTC"))
+    system = _TIME_PARSE_SYSTEM_TEMPLATE.format(now=now_msk.strftime("%Y-%m-%d %H:%M"))
     try:
         response = await llm.generate_response(
             messages=[
@@ -131,13 +137,17 @@ async def _parse_time_expression(expr: str) -> tuple[datetime | None, str | None
     except Exception as e:
         logger.warning("reminders: time parse failed, falling back", error=str(e), expr=expr)
 
-    # Fallback: simple regex for common patterns
-    return _parse_time_fallback(expr, now)
+    # Fallback: simple regex — interprets times as MSK, stores as UTC
+    return _parse_time_fallback(expr, now_msk)
 
 
-def _parse_time_fallback(expr: str, now: datetime) -> tuple[datetime | None, str | None]:
-    """Simple fallback time parser."""
+def _parse_time_fallback(expr: str, now_msk: datetime) -> tuple[datetime | None, str | None]:
+    """Simple fallback time parser. Interprets times as Moscow (MSK), returns UTC for storage."""
     expr_lower = expr.lower()
+
+    def to_utc(dt_msk: datetime) -> datetime:
+        """Convert MSK datetime to UTC."""
+        return dt_msk.astimezone(timezone.utc)
 
     # через N минут/часов
     delta_match = re.search(r"через\s+(\d+)\s+(минут|час)", expr_lower)
@@ -145,26 +155,26 @@ def _parse_time_fallback(expr: str, now: datetime) -> tuple[datetime | None, str
         n = int(delta_match.group(1))
         unit = delta_match.group(2)
         delta = timedelta(minutes=n) if "минут" in unit else timedelta(hours=n)
-        dt = now + delta
-        return dt, expr
+        dt_msk = now_msk + delta
+        return to_utc(dt_msk), expr
 
     # завтра в HH(:MM)?
     tomorrow_match = re.search(r"завтра.*?(\d{1,2})(?::(\d{2}))?", expr_lower)
     if tomorrow_match:
         h = int(tomorrow_match.group(1))
         m = int(tomorrow_match.group(2) or 0)
-        dt = (now + timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
-        return dt, f"завтра в {h:02d}:{m:02d}"
+        dt_msk = (now_msk + timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
+        return to_utc(dt_msk), f"завтра в {h:02d}:{m:02d}"
 
     # в HH:MM
     time_match = re.search(r"в\s+(\d{1,2}):(\d{2})", expr_lower)
     if time_match:
         h = int(time_match.group(1))
         m = int(time_match.group(2))
-        dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if dt <= now:
-            dt += timedelta(days=1)
-        return dt, f"в {h:02d}:{m:02d}"
+        dt_msk = now_msk.replace(hour=h, minute=m, second=0, microsecond=0)
+        if dt_msk <= now_msk:
+            dt_msk += timedelta(days=1)
+        return to_utc(dt_msk), f"в {h:02d}:{m:02d}"
 
     # Cannot parse — return None so caller can ask user to clarify
     return None, None
@@ -199,9 +209,9 @@ async def _handle_create(intent: dict, chat_id: int, user_id: int) -> str:
         target_user_id=target_user_id,
     )
 
-    time_display = remind_at.strftime("%H:%M %d.%m")
+    time_display = remind_at.astimezone(MSK).strftime("%H:%M %d.%m")
     target_line = f"\n👤 Для: @{target_username.lstrip('@')}" if target_username else ""
-    return f"⏰ Напомню: <b>{content}</b>\n🕐 <b>{time_display} UTC</b>{target_line}"
+    return f"⏰ Напомню: <b>{content}</b>\n🕐 <b>{time_display} МСК</b>{target_line}"
 
 
 async def _handle_list(chat_id: int, user_id: int) -> str:
@@ -211,7 +221,7 @@ async def _handle_list(chat_id: int, user_id: int) -> str:
 
     lines = [f"🔔 <b>Твои напоминания:</b>\n"]
     for i, r in enumerate(reminders, 1):
-        time_str = r.remind_at.strftime("%H:%M %d.%m") if r.remind_at else "—"
+        time_str = r.remind_at.astimezone(MSK).strftime("%H:%M %d.%m") if r.remind_at else "—"
         lines.append(f"{i}. <b>{r.content}</b> — {time_str}")
 
     return "\n".join(lines)
