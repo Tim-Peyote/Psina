@@ -25,6 +25,7 @@ class RouteAction:
     USE_SKILL = "use_skill"
     STAY_SILENT = "stay_silent"
     EXIT_SKILL = "exit_skill"
+    ADJUST_PERSONALITY = "adjust_personality"
 
 
 class LLMRouteDecision:
@@ -37,12 +38,14 @@ class LLMRouteDecision:
         search_query: str = "",
         skill_slug: str = "",
         reasoning: str = "",
+        direction: str = "",
     ):
         self.action = action
         self.confidence = confidence
         self.search_query = search_query
         self.skill_slug = skill_slug
         self.reasoning = reasoning
+        self.direction = direction  # "harder" | "softer" — для adjust_personality
 
     @property
     def should_search(self) -> bool:
@@ -63,6 +66,10 @@ class LLMRouteDecision:
     @property
     def should_exit_skill(self) -> bool:
         return self.action == RouteAction.EXIT_SKILL
+
+    @property
+    def should_adjust_personality(self) -> bool:
+        return self.action == RouteAction.ADJUST_PERSONALITY
 
 
 class LLMRouter:
@@ -173,6 +180,9 @@ class LLMRouter:
   "выходит из комнаты", "бросает оружие", "уходит из города", "покидает таверну" —
   это use_skill (game_action), а НЕ exit_skill! Exit — только когда реальный человек
   хочет перестать играть.
+- adjust_personality: пользователь хочет изменить стиль/характер/манеру общения бота
+  (грубее, мягче, мужественнее, без мата, с матом, смелее, ты размазня, будь жёстче, веди себя поскромнее и т.д.)
+  Укажи direction: "harder" (агрессивнее/грубее/смелее/мужественнее) или "softer" (мягче/спокойнее/вежливее/скромнее)
 {skills_section}
 ПРАВИЛА:
 1. Если пользователь просит найти что-то в интернете ("найди", "поищи", "погугли") — выбери search.
@@ -194,9 +204,12 @@ class LLMRouter:
    - «напомни через час», «напомни завтра в 9», «напомни в пятницу» → use_skill (agent_reminders): есть конкретное будущее время
    - «напомни что мы обсуждали», «напомни кто тут главный», «напомни какой фильм смотрели», «напомни о чём говорили» → answer_directly: это запрос из памяти/контекста чата, времени нет
    Ключ: нет указания на будущее время = не скилл напоминаний, отвечай из памяти.
+10. Если пользователь просит бота изменить манеру общения, стиль или характер — выбери adjust_personality.
+    harder → грубее, смелее, резче, мужественнее, не стесняйся, с матом, раскрепощённее
+    softer → мягче, вежливее, спокойнее, скромнее, без грубостей, поаккуратнее
 
 ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON (без markdown, без обёрток):
-{{"action": "search|answer_directly|use_skill|stay_silent|exit_skill", "search_query": "только для search", "skill_slug": "только для use_skill", "confidence": 0.95, "reasoning": "короткое объяснение"}}"""
+{{"action": "search|answer_directly|use_skill|stay_silent|exit_skill|adjust_personality", "search_query": "только для search", "skill_slug": "только для use_skill", "direction": "harder|softer — только для adjust_personality", "confidence": 0.95, "reasoning": "короткое объяснение"}}"""
         return prompt
 
     def _build_user_message(
@@ -245,9 +258,10 @@ class LLMRouter:
         search_query = (data.get("search_query") or "").strip()
         skill_slug = (data.get("skill_slug") or "").strip()
         reasoning = data.get("reasoning", "")
+        direction = (data.get("direction") or "").strip().lower()
 
         # Валидация action
-        if action not in (RouteAction.SEARCH, RouteAction.ANSWER_DIRECTLY, RouteAction.USE_SKILL, RouteAction.STAY_SILENT, RouteAction.EXIT_SKILL):
+        if action not in (RouteAction.SEARCH, RouteAction.ANSWER_DIRECTLY, RouteAction.USE_SKILL, RouteAction.STAY_SILENT, RouteAction.EXIT_SKILL, RouteAction.ADJUST_PERSONALITY):
             logger.warning("LLM routing: unknown action", action=action)
             action = RouteAction.ANSWER_DIRECTLY
 
@@ -270,6 +284,7 @@ class LLMRouter:
             search_query=search_query,
             skill_slug=skill_slug,
             reasoning=reasoning,
+            direction=direction,
         )
 
 

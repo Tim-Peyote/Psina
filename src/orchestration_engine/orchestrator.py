@@ -206,12 +206,6 @@ class Orchestrator:
                     "Не читай лекции и не угрожай молчанием — просто ответь как живой человек."
                 )
 
-        # Команды регулировки характера (обрабатываем но не прерываем пайплайн)
-        personality_cmd = vibe_adapter.detect_personality_command(msg.text)
-        if personality_cmd:
-            import asyncio
-            asyncio.ensure_future(vibe_adapter.apply_personality_command(msg.chat_id, personality_cmd))
-
         # ===== ФАЗА 1.7: LLM-МАРШРУТИЗАЦИЯ =====
         # LLM-роутер решает: поиск / скилл / ответить / молчать
         # Пропускаем роутер если:
@@ -225,10 +219,14 @@ class Orchestrator:
             chat_id=msg.chat_id,
         )
         is_direct_call = trigger_pre.level == ConfidenceLevel.HIGH
-        if abuse_context is None and not is_direct_call:
+        if abuse_context is None:
             route_decision = await self._llm_route(msg)
             if route_decision is not None:
-                return route_decision  # "" = hard silence, non-empty = actual response
+                # Прямой вызов по имени — stay_silent игнорируем, скиллы/поиск пропускаем нормально
+                if is_direct_call and route_decision == "":
+                    pass  # override silent, продолжаем в обычный pipeline
+                else:
+                    return route_decision
 
         # ===== ФАЗА 2: БЫСТРЫЕ КОМАНДЫ (fast-path) =====
 
@@ -397,6 +395,16 @@ class Orchestrator:
                     user_id=msg.user_id,
                 )
                 raise
+
+        # === ACTION: ADJUST_PERSONALITY ===
+        if decision.should_adjust_personality and decision.direction:
+            await vibe_adapter.apply_personality_command(msg.chat_id, decision.direction)
+            logger.info(
+                "Personality adjusted via LLM",
+                direction=decision.direction,
+                chat_id=msg.chat_id,
+            )
+            return None  # Продолжаем — бот ответит с уже обновлёнными весами
 
         # === ACTION: STAY_SILENT ===
         if decision.should_be_silent:
