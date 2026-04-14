@@ -256,7 +256,7 @@ async def _process_message_locked(
                 active_session.setdefault("characters", {}).clear()
                 active_session["npcs"] = {}
                 active_session.setdefault("journal", []).append({"summary": "🔄 Сессия Ноль перезапущена"})
-                session.pop("_sz_chatter_count", None)
+                active_session.pop("_sz_chatter_count", None)
                 response = (
                     "🔄 <b>Сессия Ноль перезапущена</b>\n\n"
                     "Начинаем с чистого листа.\n\n"
@@ -276,20 +276,20 @@ async def _process_message_locked(
                 response = "🏁 Настройка отменена. Скажи «начни новую игру» когда захочешь."
             elif sz_class == "chatter":
                 # Not about setup — ask for clarification
-                chatter_count = session.get("_sz_chatter_count", 0)
+                chatter_count = active_session.get("_sz_chatter_count", 0)
                 chatter_count += 1
-                session["_sz_chatter_count"] = chatter_count
+                active_session["_sz_chatter_count"] = chatter_count
 
                 if chatter_count >= 2:
                     reask = _STEP_PROMPTS.get(active_session.get("step", 1), "Давай вернёмся к настройке.")
-                    session["_sz_chatter_count"] = 0
+                    active_session["_sz_chatter_count"] = 0
                     response = f"Не совсем понимаю. Это ответ на мой вопрос или ты про другое?\n\n{reask}"
                 else:
                     reask = _STEP_PROMPTS.get(active_session.get("step", 1), "Расскажи подробнее.")
                     response = f"Не совсем понял — это про мир и историю?\n\n{reask}"
             else:
                 # answer — accept the response and move forward
-                session.pop("_sz_chatter_count", None)
+                active_session.pop("_sz_chatter_count", None)
                 response = await _handle_session_zero(msg, active_session, chat_id, user_id, system_prompt)
 
         elif phase == "playing":
